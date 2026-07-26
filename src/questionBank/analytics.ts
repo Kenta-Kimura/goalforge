@@ -49,18 +49,6 @@ export function calculateBankSummary(bank: QuestionBank) {
   };
 }
 
-export function selectRoundTargetProblemIds(
-  bank: QuestionBank,
-  mode: "active" | "all" | "manual",
-  manualProblemIds: string[] = [],
-) {
-  if (mode === "manual") return [...new Set(manualProblemIds)];
-  return bank.sections
-    .flatMap((section) => section.problems)
-    .filter((problem) => mode === "active" ? problem.reviewStatus === "active" : problem.reviewStatus !== "excluded")
-    .map((problem) => problem.id);
-}
-
 export function calculateRoundSummary(bank: QuestionBank, round: PracticeRound) {
   const target = new Set(round.targetProblemIds);
   const attempts = bank.sections

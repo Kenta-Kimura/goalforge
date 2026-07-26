@@ -6,7 +6,6 @@ import {
   calculateRoundSummary,
   deriveScoreResult,
   latestAttempt,
-  selectRoundTargetProblemIds,
 } from "../src/questionBank/analytics";
 import { formatAttemptDate } from "../src/questionBank/presentation";
 import { validateScore } from "../src/questionBank/service";
@@ -99,22 +98,6 @@ test("模擬試験大問の得点を履歴から集計する", () => {
   const [summary] = calculateMockExamSummary(bank, bank.rounds[0]);
   assert.equal(summary.earnedScore, 13);
   assert.equal(summary.maxScore, 15);
-});
-
-test("1周目・次周回・全問題の対象を選び、開始後のスナップショットを変えない", () => {
-  const bank = makeBank([
-    problem("p1", "active", []),
-    problem("p2", "completed", []),
-    problem("p3", "paused", []),
-    problem("p4", "excluded", []),
-  ]);
-  assert.deepEqual(selectRoundTargetProblemIds(bank, "active"), ["p1"]);
-  assert.deepEqual(selectRoundTargetProblemIds(bank, "all"), ["p1", "p2", "p3"]);
-  const snapshot = selectRoundTargetProblemIds(bank, "active");
-  bank.sections[0].problems[0].reviewStatus = "completed";
-  assert.deepEqual(snapshot, ["p1"]);
-  bank.sections[0].problems[1].reviewStatus = "active";
-  assert.deepEqual(selectRoundTargetProblemIds(bank, "active"), ["p2"]);
 });
 
 function attempt(
