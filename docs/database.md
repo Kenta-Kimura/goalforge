@@ -53,7 +53,24 @@ erDiagram
 - `attempt_number`はAttempt作成時にのみ決定する不変値であり、Attempt編集では変更しません。
 - Problem履歴は学習日時ではなく`attempt_number DESC`で取得します。
 - 周回対象は`round_target_problems`へ保存し、後の復習状態変更から独立させます。
-- 削除時の関連データは外部キーと`ON DELETE CASCADE`で一貫させます。
+- 教材を削除すると、`materials`を起点とする外部キー`ON DELETE CASCADE`により、対応する`question_banks`、`question_sections`、`problems`、`problem_attempts`、`practice_rounds`、`round_target_problems`を削除します。
+- `problems.review_status`は独立したテーブルではなく`problems`行のカラムです。復習状態は問題行とともに消滅します。
+- カスケード削除は対象教材の外部キー関係内に限定され、他の教材のデータには影響しません。
+
+削除関係は次のとおりです。
+
+```text
+materials
+└─ question_banks
+   ├─ question_sections
+   │  └─ problems
+   │     ├─ problem_attempts
+   │     ├─ round_target_problems
+   │     └─ review_status（problems行のカラム）
+   └─ practice_rounds
+      ├─ problem_attempts
+      └─ round_target_problems
+```
 
 ## Migration管理
 
