@@ -6,12 +6,15 @@ GoalForgeでは、教材管理をマスター、演習を学習履歴、ダッ�
 
 ## 主な機能
 
-- 教材・セクション・問題のマスター管理
-- 正誤・部分点・確信度・復習状態を含む解答履歴
-- 周回と周回対象問題の記録
+- SQLiteによる教材・セクション・問題のマスター管理
+- 正誤・部分点・確信度・復習状態を含むAttempt履歴
+- Roundと周回対象問題の管理
+- Attemptを基にしたAnalytics
+- SQLiteバックアップ／リストア
+- 中国語検定教材専用インポートCLI
 - 目標、教材進捗、学習計画、ペースの管理
 - AnkiConnect同期とオフライン時の最終同期データ表示
-- SQLite Migration、旧LocalStorage移行、JSONバックアップ
+- SQLite Migration、旧LocalStorage移行
 
 ## スクリーンショット
 
