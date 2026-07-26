@@ -417,6 +417,13 @@
   flex-wrap: wrap;
 }
 
+.score-mark-history {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 4rem;
+}
+
 .danger-button {
   border-color: #c9523d;
   background: #c9523d;

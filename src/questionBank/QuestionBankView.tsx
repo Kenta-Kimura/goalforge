@@ -339,17 +339,30 @@ function ProblemList({
             </summary>
             <div className="problem-table-wrap">
               <table className="problem-table">
-                <thead><tr><th>選択</th><th>問題</th><th>最新結果</th><th>得点</th><th>自信</th><th>回数</th><th>状態</th><th>操作</th></tr></thead>
+                <thead><tr><th>選択</th><th>問題</th><th>解答履歴</th><th>最新得点</th><th>最新日時</th><th>自信</th><th>回数</th><th>状態</th><th>操作</th></tr></thead>
                 <tbody>
                   {visible.map((problem) => {
                     const attempt = latestAttempt(problem);
-                    const result = attempt && deriveScoreResult(attempt.earnedScore, attempt.maxScore);
                     return (
                       <tr key={problem.id}>
                         <td><input type="checkbox" aria-label={`No.${problem.number}を選択`} checked={selectedProblemIds.includes(problem.id)} onChange={(event) => setSelectedProblemIds(event.target.checked ? [...selectedProblemIds, problem.id] : selectedProblemIds.filter((id) => id !== problem.id))} /></td>
                         <td><strong>No.{problem.number}</strong>{problem.title && <small>{problem.title}</small>}</td>
-                        <td><ScoreMark result={result} /></td>
+                        <td>
+                          <div className="score-mark-history" aria-label={`${problem.attempts.length}回分の解答履歴`}>
+                            {problem.attempts.length
+                              ? [...problem.attempts]
+                                  .sort((left, right) => new Date(left.answeredAt).getTime() - new Date(right.answeredAt).getTime())
+                                  .map((historyAttempt) => (
+                                    <ScoreMark
+                                      key={historyAttempt.id}
+                                      result={deriveScoreResult(historyAttempt.earnedScore, historyAttempt.maxScore)}
+                                    />
+                                  ))
+                              : <ScoreMark />}
+                          </div>
+                        </td>
                         <td>{attempt ? `${attempt.earnedScore}/${attempt.maxScore}` : "—"}</td>
+                        <td>{attempt ? formatAnsweredAt(attempt.answeredAt) : "—"}</td>
                         <td>{attempt?.confidence ? confidenceLabels[attempt.confidence] : "未設定"}</td>
                         <td>{problem.attempts.length}回</td>
                         <td>
@@ -621,6 +634,7 @@ function HistoryPanel({ problem, bank, onClose, onChanged }: { problem: Problem;
 }
 
 function AttemptEditForm({ attempt, onCancel, onSaved }: { attempt: ProblemAttempt; onCancel: () => void; onSaved: () => Promise<void> }) {
+  const [answeredAt, setAnsweredAt] = useState(toDateTimeLocalValue(attempt.answeredAt));
   const [earned, setEarned] = useState(attempt.earnedScore);
   const [max, setMax] = useState(attempt.maxScore);
   const [confidence, setConfidence] = useState<Confidence>(attempt.confidence);
@@ -628,9 +642,17 @@ function AttemptEditForm({ attempt, onCancel, onSaved }: { attempt: ProblemAttem
   return (
     <form className="attempt-edit" onSubmit={async (event) => {
       event.preventDefault();
-      await service.updateAttempt(attempt.id, { ...attempt, earnedScore: earned, maxScore: max, confidence, note });
+      await service.updateAttempt(attempt.id, {
+        ...attempt,
+        answeredAt: new Date(answeredAt).toISOString(),
+        earnedScore: earned,
+        maxScore: max,
+        confidence,
+        note,
+      });
       await onSaved();
     }}>
+      <label>日時<input type="datetime-local" required value={answeredAt} onChange={(event) => setAnsweredAt(event.target.value)} /></label>
       <label>獲得点<input type="number" min="0" step="0.001" value={earned} onChange={(event) => setEarned(event.target.valueAsNumber)} /></label>
       <label>満点<input type="number" min="1" step="0.001" value={max} onChange={(event) => setMax(event.target.valueAsNumber)} /></label>
       <select value={confidence ?? ""} onChange={(event) => setConfidence((event.target.value || null) as Confidence)}><option value="">未設定</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select>
@@ -646,6 +668,16 @@ function ScoreMark({ result }: { result?: ReturnType<typeof deriveScoreResult> }
 
 function scoreMark(result: ReturnType<typeof deriveScoreResult>) {
   return result === "correct" ? "○" : result === "partial" ? "△" : "×";
+}
+
+function formatAnsweredAt(value: string) {
+  return new Intl.DateTimeFormat("ja-JP", { dateStyle: "short", timeStyle: "short" }).format(new Date(value));
+}
+
+function toDateTimeLocalValue(value: string) {
+  const date = new Date(value);
+  const localDate = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return localDate.toISOString().slice(0, 16);
 }
 
 export function toMessage(error: unknown) {
