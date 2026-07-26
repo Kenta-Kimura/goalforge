@@ -15,7 +15,7 @@ export function deriveScoreResult(earnedScore: number, maxScore: number): ScoreR
 }
 
 export function latestAttempt(problem: Problem) {
-  return [...problem.attempts].sort((a, b) => b.answeredAt.localeCompare(a.answeredAt))[0];
+  return [...problem.attempts].sort((a, b) => b.attemptNumber - a.attemptNumber)[0];
 }
 
 export function matchesFilter(problem: Problem, filter: QuestionFilter) {
@@ -70,7 +70,7 @@ export function calculateRoundSummary(bank: QuestionBank, round: PracticeRound) 
   const latestByProblem = new Map<string, ProblemAttempt>();
   for (const attempt of attempts) {
     const current = latestByProblem.get(attempt.problemId);
-    if (!current || current.answeredAt < attempt.answeredAt) latestByProblem.set(attempt.problemId, attempt);
+    if (!current || current.attemptNumber < attempt.attemptNumber) latestByProblem.set(attempt.problemId, attempt);
   }
   const latest = [...latestByProblem.values()];
   const earnedScore = latest.reduce((sum, attempt) => sum + attempt.earnedScore, 0);
@@ -113,7 +113,7 @@ function calculateSectionScore(section: QuestionSection, round: PracticeRound) {
     .map((problem) =>
       [...problem.attempts]
         .filter((attempt) => attempt.roundId === round.id)
-        .sort((a, b) => b.answeredAt.localeCompare(a.answeredAt))[0],
+        .sort((a, b) => b.attemptNumber - a.attemptNumber)[0],
     )
     .filter((attempt): attempt is ProblemAttempt => Boolean(attempt));
   const earnedScore = attempts.reduce((sum, attempt) => sum + attempt.earnedScore, 0);

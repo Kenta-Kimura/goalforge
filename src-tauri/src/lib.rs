@@ -54,7 +54,8 @@ struct ProblemAttempt {
     id: String,
     problem_id: String,
     round_id: String,
-    answered_at: String,
+    answered_at: Option<String>,
+    attempt_number: i64,
     earned_score: f64,
     max_score: f64,
     confidence: Option<String>,
@@ -194,6 +195,28 @@ fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (3, ?1)",
+                [now()],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
+    let has_v4 = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !has_v4 {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute_batch(include_str!("../migrations/004_attempt_number.sql"))
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?1)",
                 [now()],
             )
             .map_err(|error| error.to_string())?;
@@ -455,8 +478,8 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
 fn load_attempts(connection: &Connection, problem_id: &str) -> Result<Vec<ProblemAttempt>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, round_id, answered_at, earned_score_milli, max_score_milli, confidence, note
-             FROM problem_attempts WHERE problem_id = ?1 ORDER BY answered_at DESC, id DESC",
+            "SELECT id, round_id, answered_at, attempt_number, earned_score_milli, max_score_milli, confidence, note
+             FROM problem_attempts WHERE problem_id = ?1 ORDER BY attempt_number DESC",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -466,10 +489,11 @@ fn load_attempts(connection: &Connection, problem_id: &str) -> Result<Vec<Proble
                 problem_id: problem_id.into(),
                 round_id: row.get(1)?,
                 answered_at: row.get(2)?,
-                earned_score: score(row.get(3)?),
-                max_score: score(row.get(4)?),
-                confidence: row.get(5)?,
-                note: row.get(6)?,
+                attempt_number: row.get(3)?,
+                earned_score: score(row.get(4)?),
+                max_score: score(row.get(5)?),
+                confidence: row.get(6)?,
+                note: row.get(7)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -765,6 +789,67 @@ fn validate_attempt(transaction: &Transaction, input: &AttemptInput) -> Result<(
     Ok((earned, max))
 }
 
+fn next_attempt_number(transaction: &Transaction, problem_id: &str) -> Result<i64, String> {
+    transaction
+        .query_row(
+            "SELECT COALESCE(MAX(attempt_number), 0) + 1
+             FROM problem_attempts WHERE problem_id = ?1",
+            [problem_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn create_attempt_transaction(
+    transaction: &Transaction,
+    input: &AttemptInput,
+) -> Result<ProblemAttempt, String> {
+    let (earned, max) = validate_attempt(transaction, input)?;
+    let attempt_number = next_attempt_number(transaction, &input.problem_id)?;
+    let attempt = ProblemAttempt {
+        id: input
+            .id
+            .clone()
+            .unwrap_or_else(|| Uuid::new_v4().to_string()),
+        problem_id: input.problem_id.clone(),
+        round_id: input.round_id.clone(),
+        answered_at: Some(input.answered_at.clone().unwrap_or_else(now)),
+        attempt_number,
+        earned_score: input.earned_score,
+        max_score: input.max_score,
+        confidence: input.confidence.clone(),
+        note: input.note.clone(),
+    };
+    transaction
+        .execute(
+            "INSERT INTO problem_attempts(
+               id,problem_id,round_id,answered_at,attempt_number,
+               earned_score_milli,max_score_milli,confidence,note
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                attempt.id,
+                attempt.problem_id,
+                attempt.round_id,
+                attempt.answered_at,
+                attempt.attempt_number,
+                earned,
+                max,
+                attempt.confidence,
+                attempt.note
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if let Some(status) = &input.next_review_status {
+        transaction
+            .execute(
+                "UPDATE problems SET review_status=?1 WHERE id=?2",
+                params![status, input.problem_id],
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    Ok(attempt)
+}
+
 #[tauri::command]
 fn create_attempt(
     database: State<Database>,
@@ -777,35 +862,7 @@ fn create_attempt(
     let transaction = connection
         .transaction()
         .map_err(|error| error.to_string())?;
-    let (earned, max) = validate_attempt(&transaction, &input)?;
-    let attempt = ProblemAttempt {
-        id: input
-            .id
-            .clone()
-            .unwrap_or_else(|| Uuid::new_v4().to_string()),
-        problem_id: input.problem_id.clone(),
-        round_id: input.round_id.clone(),
-        answered_at: input.answered_at.clone().unwrap_or_else(now),
-        earned_score: input.earned_score,
-        max_score: input.max_score,
-        confidence: input.confidence.clone(),
-        note: input.note.clone(),
-    };
-    transaction
-        .execute(
-            "INSERT INTO problem_attempts(id,problem_id,round_id,answered_at,earned_score_milli,max_score_milli,confidence,note)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
-            params![attempt.id,attempt.problem_id,attempt.round_id,attempt.answered_at,earned,max,attempt.confidence,attempt.note],
-        )
-        .map_err(|error| error.to_string())?;
-    if let Some(status) = input.next_review_status {
-        transaction
-            .execute(
-                "UPDATE problems SET review_status=?1 WHERE id=?2",
-                params![status, input.problem_id],
-            )
-            .map_err(|error| error.to_string())?;
-    }
+    let attempt = create_attempt_transaction(&transaction, &input)?;
     transaction.commit().map_err(|error| error.to_string())?;
     Ok(attempt)
 }
@@ -824,7 +881,16 @@ fn update_attempt(
         .transaction()
         .map_err(|error| error.to_string())?;
     let (earned, max) = validate_attempt(&transaction, &input)?;
-    let answered_at = input.answered_at.clone().unwrap_or_else(now);
+    let attempt_number: i64 = transaction
+        .query_row(
+            "SELECT attempt_number FROM problem_attempts WHERE id = ?1",
+            [&id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or("編集する解答履歴が見つかりません。")?;
+    let answered_at = input.answered_at.clone();
     let changed = transaction
         .execute(
             "UPDATE problem_attempts SET problem_id=?1,round_id=?2,answered_at=?3,earned_score_milli=?4,
@@ -841,6 +907,7 @@ fn update_attempt(
         problem_id: input.problem_id,
         round_id: input.round_id,
         answered_at,
+        attempt_number,
         earned_score: input.earned_score,
         max_score: input.max_score,
         confidence: input.confidence,
@@ -931,4 +998,162 @@ pub fn run() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn database_at_v3() -> Connection {
+        let connection = Connection::open_in_memory().expect("in-memory database");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("migration 001");
+        connection
+            .execute_batch(include_str!(
+                "../migrations/002_problem_details_and_confidence.sql"
+            ))
+            .expect("migration 002");
+        connection
+            .execute_batch(include_str!("../migrations/003_material_master.sql"))
+            .expect("migration 003");
+        connection
+            .execute_batch(
+                "INSERT INTO materials(id,title,created_at,updated_at)
+                   VALUES ('material-1','教材','2026-01-01','2026-01-01');
+                 INSERT INTO question_banks(id,material_id,title,created_at,updated_at)
+                   VALUES ('bank-1','material-1','教材','2026-01-01','2026-01-01');
+                 INSERT INTO question_sections(
+                   id,question_bank_id,title,sort_order,evaluation_type,is_mock_exam_section
+                 ) VALUES ('section-1','bank-1','大問1',0,'binary',0);
+                 INSERT INTO problems(
+                   id,section_id,number,sort_order,default_max_score_milli,review_status
+                 ) VALUES ('problem-1','section-1','1',0,1000,'active');
+                 INSERT INTO practice_rounds(id,question_bank_id,round_number,started_at)
+                   VALUES ('round-1','bank-1',1,'2026-01-01');
+                 INSERT INTO problem_attempts(
+                   id,problem_id,round_id,answered_at,earned_score_milli,max_score_milli
+                 ) VALUES
+                   ('attempt-c','problem-1','round-1','2026-03-01',1000,1000),
+                   ('attempt-b','problem-1','round-1','2026-01-01',0,1000),
+                   ('attempt-a','problem-1','round-1','2026-01-01',1000,1000);",
+            )
+            .expect("fixture data");
+        connection
+    }
+
+    #[test]
+    fn migration_004_assigns_sequence_and_allows_unknown_dates() {
+        let mut connection = database_at_v3();
+        let before: i64 = connection
+            .query_row("SELECT COUNT(*) FROM problem_attempts", [], |row| {
+                row.get(0)
+            })
+            .expect("count before");
+        let transaction = connection.transaction().expect("migration transaction");
+        transaction
+            .execute_batch(include_str!("../migrations/004_attempt_number.sql"))
+            .expect("migration 004");
+        transaction.commit().expect("commit migration");
+
+        let after: i64 = connection
+            .query_row("SELECT COUNT(*) FROM problem_attempts", [], |row| {
+                row.get(0)
+            })
+            .expect("count after");
+        assert_eq!(before, after);
+
+        let migrated = connection
+            .prepare(
+                "SELECT id, attempt_number FROM problem_attempts
+                 WHERE problem_id='problem-1' ORDER BY attempt_number",
+            )
+            .expect("prepare migrated attempts")
+            .query_map([], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+            })
+            .expect("query migrated attempts")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect migrated attempts");
+        assert_eq!(
+            migrated,
+            vec![
+                ("attempt-a".into(), 1),
+                ("attempt-b".into(), 2),
+                ("attempt-c".into(), 3),
+            ]
+        );
+
+        connection
+            .execute(
+                "INSERT INTO problem_attempts(
+                   id,problem_id,round_id,answered_at,attempt_number,
+                   earned_score_milli,max_score_milli
+                 ) VALUES ('attempt-null','problem-1','round-1',NULL,4,1000,1000)",
+                [],
+            )
+            .expect("nullable answered_at");
+        let answered_at: Option<String> = connection
+            .query_row(
+                "SELECT answered_at FROM problem_attempts WHERE id='attempt-null'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read nullable answered_at");
+        assert_eq!(answered_at, None);
+
+        let duplicate = connection.execute(
+            "INSERT INTO problem_attempts(
+               id,problem_id,round_id,answered_at,attempt_number,
+               earned_score_milli,max_score_milli
+             ) VALUES ('attempt-duplicate','problem-1','round-1',NULL,4,1000,1000)",
+            [],
+        );
+        assert!(duplicate.is_err());
+
+        let transaction = connection.transaction().expect("number transaction");
+        assert_eq!(next_attempt_number(&transaction, "problem-1").unwrap(), 5);
+        transaction.rollback().expect("rollback number transaction");
+
+        let transaction = connection.transaction().expect("create transaction");
+        let created = create_attempt_transaction(
+            &transaction,
+            &AttemptInput {
+                id: Some("attempt-created".into()),
+                problem_id: "problem-1".into(),
+                round_id: "round-1".into(),
+                answered_at: None,
+                earned_score: 1.0,
+                max_score: 1.0,
+                confidence: Some("high".into()),
+                note: None,
+                next_review_status: None,
+            },
+        )
+        .expect("normal attempt creation");
+        assert_eq!(created.attempt_number, 5);
+        assert!(created.answered_at.is_some());
+        transaction.commit().expect("commit created attempt");
+
+        let loaded = load_attempts(&connection, "problem-1").expect("load attempts");
+        assert_eq!(
+            loaded
+                .iter()
+                .map(|attempt| attempt.attempt_number)
+                .collect::<Vec<_>>(),
+            vec![5, 4, 3, 2, 1]
+        );
+        assert_eq!(loaded[1].answered_at, None);
+
+        let integrity: String = connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .expect("integrity check");
+        assert_eq!(integrity, "ok");
+        let foreign_key_errors: i64 = connection
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .expect("foreign key check");
+        assert_eq!(foreign_key_errors, 0);
+    }
 }

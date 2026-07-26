@@ -39,7 +39,8 @@ export interface ProblemAttempt {
   id: string;
   problemId: string;
   roundId: string;
-  answeredAt: string;
+  answeredAt: string | null;
+  attemptNumber: number;
   earnedScore: number;
   maxScore: number;
   confidence: Confidence;
@@ -60,7 +61,7 @@ export interface CreateAttemptInput {
   id?: string;
   problemId: string;
   roundId: string;
-  answeredAt?: string;
+  answeredAt?: string | null;
   earnedScore: number;
   maxScore: number;
   confidence: Confidence;
