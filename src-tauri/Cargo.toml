@@ -1,6 +1,6 @@
 [package]
 name = "goalforge"
-version = "0.1.0"
+version = "0.8.0"
 description = "GoalForge macOS desktop app"
 authors = ["GoalForge"]
 edition = "2021"
