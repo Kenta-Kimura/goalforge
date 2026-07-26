@@ -4,6 +4,7 @@ version = "0.8.0"
 description = "GoalForge macOS desktop app"
 authors = ["GoalForge"]
 edition = "2021"
+default-run = "goalforge"
 
 [lib]
 name = "goalforge_lib"

@@ -5,8 +5,10 @@ import {
   calculateMockExamSummary,
   calculateRoundSummary,
   deriveScoreResult,
+  latestAttempt,
   selectRoundTargetProblemIds,
 } from "../src/questionBank/analytics";
+import { formatAttemptDate } from "../src/questionBank/presentation";
 import { validateScore } from "../src/questionBank/service";
 import type { Problem, ProblemAttempt, QuestionBank } from "../src/questionBank/types";
 
@@ -79,6 +81,16 @@ test("履歴の満点は既定配点変更の影響を受けない", () => {
   assert.equal(summary.maxScore, 5);
 });
 
+test("最新Attemptは学習日時ではなくProblemごとの解答番号で決める", () => {
+  const olderDateButLaterAttempt = attempt("a2", "p1", 1, 1, "high", 2, null);
+  const newerDateButEarlierAttempt = attempt("a1", "p1", 0, 1, "low", 1, "2026-07-20T00:00:00.000Z");
+  assert.equal(latestAttempt(problem("p1", "active", [newerDateButEarlierAttempt, olderDateButLaterAttempt])).id, "a2");
+});
+
+test("日時不明Attemptは学習日不明と表示する", () => {
+  assert.equal(formatAttemptDate(null), "学習日不明");
+});
+
 test("模擬試験大問の得点を履歴から集計する", () => {
   const bank = makeBank([
     problem("p1", "active", [attempt("a1", "p1", 8, 10, "high")]),
@@ -111,8 +123,10 @@ function attempt(
   earnedScore: number,
   maxScore: number,
   confidence: ProblemAttempt["confidence"],
+  attemptNumber = Number(id.slice(-1)),
+  answeredAt: string | null = `2026-07-${id.slice(-1).padStart(2, "0")}T00:00:00.000Z`,
 ): ProblemAttempt {
-  return { id, problemId, roundId: "round-1", answeredAt: `2026-07-${id.slice(-1).padStart(2, "0")}T00:00:00.000Z`, earnedScore, maxScore, confidence };
+  return { id, problemId, roundId: "round-1", answeredAt, attemptNumber, earnedScore, maxScore, confidence };
 }
 
 function problem(

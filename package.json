@@ -11,7 +11,8 @@
     "tauri:build": "tauri build",
     "preview": "vite preview",
     "test": "node --import tsx --test scripts/*.test.ts",
-    "test:validation": "node scripts/test-study-plan-validation.mjs"
+    "test:validation": "node scripts/test-study-plan-validation.mjs",
+    "import:chuken3": "node --import tsx scripts/import-chuken3-trainingbook.ts"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.8.0",

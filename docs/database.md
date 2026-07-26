@@ -41,13 +41,17 @@ erDiagram
 | `problems` | 問題マスター | 配点、評価形式、復習状態、補足情報 |
 | `practice_rounds` | 教材ごとの演習周回 | 周回番号、開始・完了日時 |
 | `round_target_problems` | 周回開始時の対象問題スナップショット | 周回と問題の中間テーブル |
-| `problem_attempts` | 問題単位の解答履歴 | 得点、満点、確信度、メモ、解答日時 |
+| `problem_attempts` | 問題単位の解答履歴 | 解答順、得点、満点、確信度、メモ、学習日時 |
 
 ## データ設計上の原則
 
 - 教材・セクション・問題はマスターとして一意に管理します。
 - 周回と履歴はマスターIDを参照し、教材を複製しません。
 - 過去の採点結果を保つため、解答時点の満点を`problem_attempts.max_score_milli`へ保存します。
+- `problem_attempts.answered_at`は学習日時です。過去履歴などで日時が不明な場合は`NULL`を許可します。
+- `problem_attempts.attempt_number`は、そのProblemに対する解答順です。1から始まり、Problemごとに一意です。
+- `attempt_number`はAttempt作成時にのみ決定する不変値であり、Attempt編集では変更しません。
+- Problem履歴は学習日時ではなく`attempt_number DESC`で取得します。
 - 周回対象は`round_target_problems`へ保存し、後の復習状態変更から独立させます。
 - 削除時の関連データは外部キーと`ON DELETE CASCADE`で一貫させます。
 
@@ -58,6 +62,11 @@ Migration SQLは`src-tauri/migrations/`へ`NNN_description.sql`形式で追加�
 1. `001_initial.sql`: 初期テーブル、外部キー、制約、インデックス
 2. `002_problem_details_and_confidence.sql`: 問題補足情報と3段階の確信度
 3. `003_material_master.sql`: 教材と演習構造の1対1制約
+4. `004_attempt_number.sql`: 学習日時のNULL許可とProblem単位の解答順
+
+Migration 004は`problem_attempts`を再作成します。既存AttemptはProblemごとに
+`answered_at ASC, id ASC`で並べ、`ROW_NUMBER()`により`attempt_number`を1から採番します。
+既存の得点、満点、確信度、メモ、学習日時、Problem・Roundとの関連は保持します。
 
 新しいMigrationを追加するときは、Tauri起動時の適用処理にも同じバージョンを登録します。
 
