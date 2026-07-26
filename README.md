@@ -2,6 +2,44 @@
 
 中国語検定などの学習目標、教材、問題単位の解答履歴を管理するmacOSデスクトップアプリです。Tauri 2、React、TypeScript、Vite、SQLiteで構成しています。
 
+GoalForgeでは、教材管理をマスター、演習を学習履歴、ダッシュボードを統計・分析として分離します。履歴を持つために教材を複製せず、一つの教材マスターを継続して利用します。
+
+## 主な機能
+
+- 教材・セクション・問題のマスター管理
+- 正誤・部分点・確信度・復習状態を含む解答履歴
+- 周回と周回対象問題の記録
+- 目標、教材進捗、学習計画、ペースの管理
+- AnkiConnect同期とオフライン時の最終同期データ表示
+- SQLite Migration、旧LocalStorage移行、JSONバックアップ
+
+## スクリーンショット
+
+TODO: ダッシュボード、教材管理、演習、解答履歴のスクリーンショットを追加します。
+
+## 技術スタック
+
+- Tauri 2 / Rust
+- React 19 / TypeScript
+- Vite 7
+- SQLite / rusqlite
+- Node.js標準テストランナー
+
+## ディレクトリ構成
+
+```text
+.
+├── docs/                 設計、DB、ロードマップ、UI
+├── scripts/              ドメインロジックと入力検証のテスト
+├── src/                  Reactフロントエンド
+│   └── questionBank/     教材管理・演習のドメインとUI
+├── src-tauri/
+│   ├── migrations/       SQLite Migration
+│   └── src/              TauriコマンドとSQLiteアクセス
+├── CONTRIBUTING.md       開発フローと品質基準
+└── package.json
+```
+
 ## データ保存
 
 学習データの正本はSQLiteです。Tauriが決定するmacOSのApplication Supportディレクトリ配下に `goalforge.sqlite` を保存し、リポジトリやアプリバンドルには保存しません。実際の保存場所とDBスキーマバージョンは「データ管理」画面で確認できます。
@@ -44,6 +82,8 @@ npm run dev
 ```
 
 ブラウザ単体ではSQLiteへ接続できないため、問題集の編集と学習データの永続化は行いません。
+
+開発フロー、ブランチ、コミット、Pull Request、Migrationのルールは[CONTRIBUTING.md](CONTRIBUTING.md)を参照してください。設計資料は[`docs/`](docs/)にあります。
 
 ## build方法
 
@@ -88,3 +128,7 @@ Mac版Ankiを起動し、AnkiConnectが `http://127.0.0.1:8765` で利用でき�
 ## 配布
 
 本アプリはSQLiteを利用するmacOSデスクトップアプリのため、通常利用版は静的Web公開ではなくTauriの `.app` / `.dmg` として配布します。コード署名・公証は配布先を広げる段階で設定してください。
+
+## ライセンス
+
+ライセンスは未定です。公開・配布範囲を決定したうえで、`LICENSE`ファイルを追加します。
