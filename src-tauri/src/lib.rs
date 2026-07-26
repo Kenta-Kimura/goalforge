@@ -690,7 +690,7 @@ fn save_question_bank(
     banks
         .into_iter()
         .find(|item| item.id == bank.id)
-        .ok_or("保存した問題集を取得できません。".into())
+        .ok_or("保存した教材を取得できません。".into())
 }
 
 #[tauri::command]
@@ -809,7 +809,7 @@ fn reset_custom_metrics(
 
 fn save_bank_transaction(transaction: &Transaction, bank: &QuestionBank) -> Result<(), String> {
     if bank.title.trim().is_empty() {
-        return Err("問題集名を入力してください。".into());
+        return Err("教材名を入力してください。".into());
     }
     let timestamp = now();
     let bank_exists = transaction

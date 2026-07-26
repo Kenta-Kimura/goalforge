@@ -17,7 +17,7 @@ export class QuestionBankService {
 
   async createBank(title: string, materialId: string) {
     const normalizedTitle = title.trim();
-    if (!normalizedTitle) throw new Error("問題集名を入力してください。");
+    if (!normalizedTitle) throw new Error("教材名を入力してください。");
     const bank: QuestionBank = {
       id: crypto.randomUUID(),
       materialId,
@@ -63,7 +63,7 @@ export class QuestionBankService {
   }
 
   renameBank(bank: QuestionBank, title: string) {
-    if (!title.trim()) throw new Error("問題集名を入力してください。");
+    if (!title.trim()) throw new Error("教材名を入力してください。");
     return this.repository.save({ ...bank, title: title.trim() });
   }
 

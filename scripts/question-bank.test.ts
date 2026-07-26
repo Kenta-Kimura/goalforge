@@ -379,7 +379,7 @@ function makeBank(problems: Problem[], isMockExamSection = false): QuestionBank 
   return {
     id: "bank-1",
     materialId: "material-1",
-    title: "テスト問題集",
+    title: "テスト教材",
     sections: [{
       id: "section-1",
       questionBankId: "bank-1",
