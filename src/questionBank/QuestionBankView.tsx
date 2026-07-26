@@ -8,6 +8,7 @@ import {
   latestAttempt,
   matchesFilter,
 } from "./analytics";
+import { formatAttemptDate } from "./presentation";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
 import type {
@@ -601,9 +602,9 @@ function HistoryPanel({ problem, bank, onClose, onChanged }: { problem: Problem;
           const round = bank.rounds.find((item) => item.id === attempt.roundId);
           return (
             <div className="history-entry" key={attempt.id}>
-              <strong>{round?.title || `${round?.roundNumber ?? "—"}周目`}</strong>
+              <strong>{attempt.attemptNumber}回目・{round?.title || `${round?.roundNumber ?? "—"}周目`}</strong>
               <dl>
-                <div><dt>日時</dt><dd>{new Intl.DateTimeFormat("ja-JP", { dateStyle: "medium", timeStyle: "short" }).format(new Date(attempt.answeredAt))}</dd></div>
+                <div><dt>日時</dt><dd>{formatAttemptDate(attempt.answeredAt)}</dd></div>
                 <div><dt>得点</dt><dd>{scoreMark(deriveScoreResult(attempt.earnedScore, attempt.maxScore))} {attempt.earnedScore} / {attempt.maxScore}</dd></div>
                 <div><dt>得点率</dt><dd>{((attempt.earnedScore / attempt.maxScore) * 100).toFixed(1)}%</dd></div>
                 <div><dt>確信度</dt><dd>{attempt.confidence ? confidenceLabels[attempt.confidence] : "未設定"}</dd></div>
