@@ -69,11 +69,10 @@ export interface CreateAttemptInput {
   nextReviewStatus?: "active" | "completed";
 }
 
-export type QuestionFilter =
-  | "all"
-  | ProblemReviewStatus
-  | "unanswered"
-  | "incorrect"
-  | "partial"
-  | "unsure"
-  | "confident_incorrect";
+export interface QuestionFilters {
+  statuses: ProblemReviewStatus[];
+  results: Array<"unanswered" | ScoreResult>;
+  confidences: Array<"unset" | Exclude<Confidence, null>>;
+  latestFrom: string;
+  latestTo: string;
+}

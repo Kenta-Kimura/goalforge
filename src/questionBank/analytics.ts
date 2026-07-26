@@ -3,7 +3,7 @@ import type {
   ProblemAttempt,
   PracticeRound,
   QuestionBank,
-  QuestionFilter,
+  QuestionFilters,
   QuestionSection,
   ScoreResult,
 } from "./types";
@@ -18,19 +18,35 @@ export function latestAttempt(problem: Problem) {
   return [...problem.attempts].sort((a, b) => b.attemptNumber - a.attemptNumber)[0];
 }
 
-export function matchesFilter(problem: Problem, filter: QuestionFilter) {
-  if (filter === "all") return true;
-  if (["active", "completed", "paused", "excluded"].includes(filter)) {
-    return problem.reviewStatus === filter;
-  }
+export function matchesFilter(problem: Problem, filters: QuestionFilters) {
+  if (filters.statuses.length > 0 && !filters.statuses.includes(problem.reviewStatus)) return false;
   const attempt = latestAttempt(problem);
-  if (filter === "unanswered") return !attempt;
-  if (!attempt) return false;
-  const result = deriveScoreResult(attempt.earnedScore, attempt.maxScore);
-  if (filter === "incorrect") return result === "incorrect";
-  if (filter === "partial") return result === "partial";
-  if (filter === "unsure") return attempt.confidence === "low";
-  return result === "incorrect" && attempt.confidence === "high";
+  if (filters.results.length > 0) {
+    const result = attempt ? deriveScoreResult(attempt.earnedScore, attempt.maxScore) : "unanswered";
+    if (!filters.results.includes(result)) return false;
+  }
+  if (filters.confidences.length > 0) {
+    if (!attempt) return false;
+    const confidence = attempt.confidence ?? "unset";
+    if (!filters.confidences.includes(confidence)) return false;
+  }
+  if (filters.latestFrom || filters.latestTo) {
+    const latestDay = attemptDay(attempt?.answeredAt);
+    if (!latestDay) return false;
+    if (filters.latestFrom && latestDay < filters.latestFrom) return false;
+    if (filters.latestTo && latestDay > filters.latestTo) return false;
+  }
+  return true;
+}
+
+function attemptDay(value: string | null | undefined) {
+  if (!value) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 export function calculateBankSummary(bank: QuestionBank) {

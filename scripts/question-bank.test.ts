@@ -6,10 +6,11 @@ import {
   calculateRoundSummary,
   deriveScoreResult,
   latestAttempt,
+  matchesFilter,
 } from "../src/questionBank/analytics";
 import { formatAttemptDate } from "../src/questionBank/presentation";
 import { validateScore } from "../src/questionBank/service";
-import type { Problem, ProblemAttempt, QuestionBank } from "../src/questionBank/types";
+import type { Problem, ProblemAttempt, QuestionBank, QuestionFilters } from "../src/questionBank/types";
 
 test("得点から○△×を導出する", () => {
   assert.equal(deriveScoreResult(1, 1), "correct");
@@ -90,6 +91,29 @@ test("日時不明Attemptは学習日不明と表示する", () => {
   assert.equal(formatAttemptDate(null), "学習日不明");
 });
 
+test("状態・最新解答・確信度・最新日を独立して組み合わせる", () => {
+  const target = problem("p1", "active", [
+    attempt("a1", "p1", 0, 1, "high", 1, "2026-07-21T10:00:00"),
+  ]);
+  assert.equal(matchesFilter(target, filters({
+    statuses: ["active", "paused"],
+    results: ["incorrect", "partial"],
+    confidences: ["high", "medium"],
+    latestFrom: "2026-07-21",
+    latestTo: "2026-07-21",
+  })), true);
+  assert.equal(matchesFilter(target, filters({ statuses: ["completed", "excluded"] })), false);
+  assert.equal(matchesFilter(target, filters({ results: ["correct", "partial"] })), false);
+  assert.equal(matchesFilter(target, filters({ confidences: ["low", "unset"] })), false);
+  assert.equal(matchesFilter(target, filters({ latestFrom: "2026-07-22" })), false);
+});
+
+test("未解答と最新日の条件は別々に判定する", () => {
+  const unanswered = problem("p1", "active", []);
+  assert.equal(matchesFilter(unanswered, filters({ results: ["unanswered", "incorrect"] })), true);
+  assert.equal(matchesFilter(unanswered, filters({ results: ["unanswered"], latestFrom: "2026-07-01" })), false);
+});
+
 test("模擬試験大問の得点を履歴から集計する", () => {
   const bank = makeBank([
     problem("p1", "active", [attempt("a1", "p1", 8, 10, "high")]),
@@ -99,6 +123,17 @@ test("模擬試験大問の得点を履歴から集計する", () => {
   assert.equal(summary.earnedScore, 13);
   assert.equal(summary.maxScore, 15);
 });
+
+function filters(overrides: Partial<QuestionFilters> = {}): QuestionFilters {
+  return {
+    statuses: [],
+    results: [],
+    confidences: [],
+    latestFrom: "",
+    latestTo: "",
+    ...overrides,
+  };
+}
 
 function attempt(
   id: string,

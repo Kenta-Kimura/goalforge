@@ -18,21 +18,16 @@ import type {
   ProblemAttempt,
   ProblemReviewStatus,
   QuestionBank,
-  QuestionFilter,
+  QuestionFilters,
 } from "./types";
 
 const service = new QuestionBankService(new SqliteQuestionBankRepository());
-const filterLabels: Record<QuestionFilter, string> = {
-  all: "全問題",
-  active: "継続",
-  completed: "終了",
-  paused: "保留",
-  excluded: "除外",
-  unanswered: "未解答",
-  incorrect: "不正解",
-  partial: "部分点",
-  unsure: "自信なし",
-  confident_incorrect: "自信あり不正解",
+const initialFilters: QuestionFilters = {
+  statuses: [],
+  results: [],
+  confidences: [],
+  latestFrom: "",
+  latestTo: "",
 };
 const statusLabels: Record<ProblemReviewStatus, string> = {
   active: "継続",
@@ -49,7 +44,7 @@ const confidenceLabels: Record<string, string> = {
 export function ExerciseView() {
   const [banks, setBanks] = useState<QuestionBank[]>([]);
   const [selectedBankId, setSelectedBankId] = useState("");
-  const [filter, setFilter] = useState<QuestionFilter>("all");
+  const [filters, setFilters] = useState<QuestionFilters>(initialFilters);
   const [selectedProblemIds, setSelectedProblemIds] = useState<string[]>([]);
   const [activeMockRoundId, setActiveMockRoundId] = useState("");
   const [answerRequest, setAnswerRequest] = useState<{ problemId: string; roundId: string } | null>(null);
@@ -146,8 +141,8 @@ export function ExerciseView() {
               />
               <ProblemList
                 bank={bank}
-                filter={filter}
-                setFilter={setFilter}
+                filters={filters}
+                setFilters={setFilters}
                 selectedProblemIds={selectedProblemIds}
                 setSelectedProblemIds={setSelectedProblemIds}
                 onStatus={(ids, status) =>
@@ -292,11 +287,11 @@ function isMockRound(bank: QuestionBank, round: QuestionBank["rounds"][number]) 
 }
 
 function ProblemList({
-  bank, filter, setFilter, selectedProblemIds, setSelectedProblemIds, onStatus, onHistory, onAnswer,
+  bank, filters, setFilters, selectedProblemIds, setSelectedProblemIds, onStatus, onHistory, onAnswer,
 }: {
   bank: QuestionBank;
-  filter: QuestionFilter;
-  setFilter: (filter: QuestionFilter) => void;
+  filters: QuestionFilters;
+  setFilters: (filters: QuestionFilters) => void;
   selectedProblemIds: string[];
   setSelectedProblemIds: (ids: string[]) => void;
   onStatus: (ids: string[], status: ProblemReviewStatus) => void;
@@ -312,14 +307,76 @@ function ProblemList({
     if (isKeyboardActivation || isPointerActivationStartedHere) onAnswer(problemId);
   }
 
+  function updateFilter<Key extends keyof QuestionFilters>(key: Key, value: QuestionFilters[Key]) {
+    setFilters({ ...filters, [key]: value });
+  }
+
+  function toggleFilter<Key extends "statuses" | "results" | "confidences">(
+    key: Key,
+    value: QuestionFilters[Key][number],
+  ) {
+    const selected = filters[key] as Array<QuestionFilters[Key][number]>;
+    updateFilter(
+      key,
+      (selected.includes(value)
+        ? selected.filter((item) => item !== value)
+        : [...selected, value]) as QuestionFilters[Key],
+    );
+  }
+
   return (
     <div className="problem-list">
       <div className="panel problem-filters">
-        <label>絞り込み
-          <select value={filter} onChange={(event) => setFilter(event.target.value as QuestionFilter)}>
-            {Object.entries(filterLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-          </select>
+        <FilterChecks
+          label="状態"
+          allSelected={filters.statuses.length === 0}
+          onAll={() => updateFilter("statuses", [])}
+          options={(Object.entries(statusLabels) as Array<[ProblemReviewStatus, string]>).map(([value, label]) => ({
+            value,
+            label,
+            checked: filters.statuses.includes(value),
+            onChange: () => toggleFilter("statuses", value),
+          }))}
+        />
+        <FilterChecks
+          label="最新の解答"
+          allSelected={filters.results.length === 0}
+          onAll={() => updateFilter("results", [])}
+          options={[
+            ["unanswered", "未解答"],
+            ["correct", "正解"],
+            ["partial", "部分点"],
+            ["incorrect", "不正解"],
+          ].map(([value, label]) => ({
+            value,
+            label,
+            checked: filters.results.includes(value as QuestionFilters["results"][number]),
+            onChange: () => toggleFilter("results", value as QuestionFilters["results"][number]),
+          }))}
+        />
+        <FilterChecks
+          label="確信度"
+          allSelected={filters.confidences.length === 0}
+          onAll={() => updateFilter("confidences", [])}
+          options={[
+            ["high", "高"],
+            ["medium", "中"],
+            ["low", "低"],
+            ["unset", "未設定"],
+          ].map(([value, label]) => ({
+            value,
+            label,
+            checked: filters.confidences.includes(value as QuestionFilters["confidences"][number]),
+            onChange: () => toggleFilter("confidences", value as QuestionFilters["confidences"][number]),
+          }))}
+        />
+        <label>最新日（開始）
+          <input type="date" value={filters.latestFrom} onChange={(event) => updateFilter("latestFrom", event.target.value)} />
         </label>
+        <label>最新日（終了）
+          <input type="date" value={filters.latestTo} onChange={(event) => updateFilter("latestTo", event.target.value)} />
+        </label>
+        <button type="button" onClick={() => setFilters(initialFilters)}>条件をクリア</button>
         <span>{selectedProblemIds.length}問選択</span>
         {(["active", "completed", "paused", "excluded"] as const).map((status) => (
           <button key={status} disabled={!selectedProblemIds.length} onClick={() => onStatus(selectedProblemIds, status)}>
@@ -328,7 +385,7 @@ function ProblemList({
         ))}
       </div>
       {bank.sections.map((section) => {
-        const visible = section.problems.filter((problem) => matchesFilter(problem, filter));
+        const visible = section.problems.filter((problem) => matchesFilter(problem, filters));
         return (
           <details className="panel question-section" key={section.id} open>
             <summary>
@@ -390,6 +447,31 @@ function ProblemList({
         );
       })}
     </div>
+  );
+}
+
+function FilterChecks({
+  label,
+  allSelected,
+  onAll,
+  options,
+}: {
+  label: string;
+  allSelected: boolean;
+  onAll: () => void;
+  options: Array<{ value: string; label: string; checked: boolean; onChange: () => void }>;
+}) {
+  return (
+    <fieldset className="filter-checks">
+      <legend>{label}</legend>
+      <label><input type="checkbox" checked={allSelected} onChange={onAll} />すべて</label>
+      {options.map((option) => (
+        <label key={option.value}>
+          <input type="checkbox" checked={option.checked} onChange={option.onChange} />
+          {option.label}
+        </label>
+      ))}
+    </fieldset>
   );
 }
 
