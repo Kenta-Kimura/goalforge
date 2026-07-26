@@ -50,7 +50,7 @@ export function ExerciseView() {
   const [filter, setFilter] = useState<QuestionFilter>("all");
   const [selectedProblemIds, setSelectedProblemIds] = useState<string[]>([]);
   const [activeRoundId, setActiveRoundId] = useState("");
-  const [answerProblemId, setAnswerProblemId] = useState("");
+  const [answerRequest, setAnswerRequest] = useState<{ problemId: string; roundId: string } | null>(null);
   const [historyProblemId, setHistoryProblemId] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(isTauriRuntime());
@@ -75,7 +75,7 @@ export function ExerciseView() {
   const problems = useMemo(() => bank?.sections.flatMap((section) => section.problems) ?? [], [bank]);
   const activeRound =
     bank?.rounds.find((round) => round.id === activeRoundId) ?? bank?.rounds.at(-1);
-  const answerProblem = problems.find((problem) => problem.id === answerProblemId);
+  const answerProblem = problems.find((problem) => problem.id === answerRequest?.problemId);
   const historyProblem = problems.find((problem) => problem.id === historyProblemId);
 
   if (!isTauriRuntime()) {
@@ -134,13 +134,11 @@ export function ExerciseView() {
                 activeRoundId={activeRoundId}
                 onSelectRound={(id) => {
                   setActiveRoundId(id);
-                  setAnswerProblemId("");
                 }}
                 onCreate={(mode) =>
                   run(async () => {
                     if (mode === "continue" && activeRound && !activeRound.completedAt) {
                       setActiveRoundId(activeRound.id);
-                      setAnswerProblemId("");
                       return;
                     }
                     const manualProblemIds =
@@ -160,7 +158,6 @@ export function ExerciseView() {
                       mode === "new" ? "all" : manualProblemIds ? "manual" : "active";
                     const round = await service.createRound(bank.id, repositoryMode, manualProblemIds);
                     setActiveRoundId(round.id);
-                    setAnswerProblemId("");
                   }, "演習を開始しました。")
                 }
                 onComplete={(roundId) => run(() => service.completeRound(roundId), "周回を完了しました。")}
@@ -191,19 +188,19 @@ export function ExerciseView() {
                     }
                   }
                   setActiveRoundId(round.id);
-                  setAnswerProblemId(problemId);
+                  setAnswerRequest({ problemId, roundId: round.id });
                 }}
               />
-              {activeRound && answerProblem && (
-                <ModalBackdrop onClose={() => setAnswerProblemId("")}>
+              {answerRequest && answerProblem && (
+                <ModalBackdrop onClose={() => setAnswerRequest(null)}>
                   <AnswerPanel
                     bank={bank}
                     problem={answerProblem}
-                    roundId={activeRound.id}
-                    onClose={() => setAnswerProblemId("")}
+                    roundId={answerRequest.roundId}
+                    onClose={() => setAnswerRequest(null)}
                     onSaved={async () => {
                       await refresh();
-                      setAnswerProblemId("");
+                      setAnswerRequest(null);
                       setMessage("解答を保存しました。");
                     }}
                   />
