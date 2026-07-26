@@ -134,14 +134,13 @@ export function ExerciseView() {
                 activeRoundId={activeRoundId}
                 onSelectRound={(id) => {
                   setActiveRoundId(id);
-                  const round = bank.rounds.find((item) => item.id === id);
-                  setAnswerProblemId(round?.targetProblemIds[0] || "");
+                  setAnswerProblemId("");
                 }}
                 onCreate={(mode) =>
                   run(async () => {
                     if (mode === "continue" && activeRound && !activeRound.completedAt) {
                       setActiveRoundId(activeRound.id);
-                      setAnswerProblemId(activeRound.targetProblemIds[0] || "");
+                      setAnswerProblemId("");
                       return;
                     }
                     const manualProblemIds =
@@ -161,7 +160,7 @@ export function ExerciseView() {
                       mode === "new" ? "all" : manualProblemIds ? "manual" : "active";
                     const round = await service.createRound(bank.id, repositoryMode, manualProblemIds);
                     setActiveRoundId(round.id);
-                    setAnswerProblemId(round.targetProblemIds[0] || "");
+                    setAnswerProblemId("");
                   }, "演習を開始しました。")
                 }
                 onComplete={(roundId) => run(() => service.completeRound(roundId), "周回を完了しました。")}
