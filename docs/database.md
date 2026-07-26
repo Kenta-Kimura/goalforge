@@ -4,6 +4,8 @@
 
 GoalForgeデスクトップ版はSQLiteを使用します。DBファイル`goalforge.sqlite`は、Tauriが決定するmacOSのApplication Supportディレクトリに保存し、Gitでは管理しません。
 
+Bundle IDを`jp.kenta.goalforge.desktop`へ変更した初回起動時は、新しい保存先にDBがない場合に限り、旧Bundle ID `jp.kenta.goalforge`の`goalforge.sqlite`とWAL関連ファイルを新しい保存先へコピーします。旧DBは自動削除しません。
+
 - 外部キー: 有効
 - Journal mode: WAL
 - 得点: 1000分の1点単位の整数

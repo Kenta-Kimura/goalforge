@@ -2,7 +2,12 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex};
+use std::{
+    collections::HashSet,
+    fs,
+    path::{Path, PathBuf},
+    sync::Mutex,
+};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
@@ -10,6 +15,9 @@ struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
 }
+
+const LEGACY_BUNDLE_IDENTIFIER: &str = "jp.kenta.goalforge";
+const DATABASE_FILENAME: &str = "goalforge.sqlite";
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -200,6 +208,40 @@ fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
         transaction.commit().map_err(|error| error.to_string())?;
     }
     Ok(connection)
+}
+
+fn migrate_legacy_bundle_database(data_dir: &Path) -> Result<(), String> {
+    let target_database = data_dir.join(DATABASE_FILENAME);
+    if target_database.exists() {
+        return Ok(());
+    }
+
+    let Some(application_support_dir) = data_dir.parent() else {
+        return Ok(());
+    };
+    let legacy_database = application_support_dir
+        .join(LEGACY_BUNDLE_IDENTIFIER)
+        .join(DATABASE_FILENAME);
+    if !legacy_database.exists() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
+    for suffix in ["", "-wal", "-shm"] {
+        let source = PathBuf::from(format!("{}{}", legacy_database.display(), suffix));
+        if source.exists() {
+            let destination = PathBuf::from(format!("{}{}", target_database.display(), suffix));
+            fs::copy(&source, &destination).map_err(|error| {
+                format!(
+                    "旧GoalForgeデータを移行できませんでした（{} → {}）: {error}",
+                    source.display(),
+                    destination.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 #[tauri::command]
@@ -892,7 +934,8 @@ pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
-            let path = data_dir.join("goalforge.sqlite");
+            migrate_legacy_bundle_database(&data_dir).map_err(std::io::Error::other)?;
+            let path = data_dir.join(DATABASE_FILENAME);
             let connection = initialize_database(&path).map_err(std::io::Error::other)?;
             app.manage(Database {
                 connection: Mutex::new(connection),
