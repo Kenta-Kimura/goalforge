@@ -1,5 +1,5 @@
-use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use chrono::{Local, Utc};
+use rusqlite::{backup::Backup, params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
@@ -31,6 +31,20 @@ use custom_metric_api::{
 };
 use custom_metrics::{seed_default_metrics, RestoreDefaultMetricOutcome};
 
+const CURRENT_SCHEMA_VERSION: i64 = 6;
+const REQUIRED_TABLES: [&str; 10] = [
+    "app_state",
+    "data_migrations",
+    "materials",
+    "practice_rounds",
+    "problem_attempts",
+    "problems",
+    "question_banks",
+    "question_sections",
+    "round_target_problems",
+    "schema_migrations",
+];
+
 struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
@@ -38,6 +52,28 @@ struct Database {
 
 const LEGACY_BUNDLE_IDENTIFIER: &str = "jp.kenta.goalforge";
 const DATABASE_FILENAME: &str = "goalforge.sqlite";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseSummary {
+    materials: i64,
+    sections: i64,
+    problems: i64,
+    attempts: i64,
+    rounds: i64,
+    round_targets: i64,
+    custom_metrics: i64,
+    goals: i64,
+    study_plans: i64,
+    schema_version: i64,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RestoreResult {
+    summary: DatabaseSummary,
+    automatic_backup_path: String,
+}
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
@@ -143,19 +179,7 @@ fn score(value: i64) -> f64 {
     value as f64 / 1000.0
 }
 
-fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
-    connection
-        .execute_batch(
-            "PRAGMA foreign_keys = ON;
-             PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             PRAGMA busy_timeout = 5000;",
-        )
-        .map_err(|error| error.to_string())?;
+fn apply_migrations(connection: &mut Connection) -> Result<(), String> {
     let applied = connection
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='schema_migrations')",
@@ -312,7 +336,7 @@ fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
             .map_err(|error| error.to_string())?;
         transaction.commit().map_err(|error| error.to_string())?;
     }
-    Ok(connection)
+    Ok(())
 }
 
 fn migrate_legacy_bundle_database(data_dir: &Path) -> Result<(), String> {
@@ -347,6 +371,324 @@ fn migrate_legacy_bundle_database(data_dir: &Path) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn configure_database(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch(
+            "PRAGMA foreign_keys = ON;
+             PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
+             PRAGMA busy_timeout = 5000;",
+        )
+        .map_err(|error| error.to_string())
+}
+
+fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    let mut connection = Connection::open(path).map_err(|error| error.to_string())?;
+    configure_database(&connection)?;
+    apply_migrations(&mut connection)?;
+    Ok(connection)
+}
+
+fn table_count(connection: &Connection, table: &str) -> Result<i64, String> {
+    connection
+        .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .map_err(|error| error.to_string())
+}
+
+fn optional_table_count(connection: &Connection, table: &str) -> Result<i64, String> {
+    let exists: bool = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+            [table],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if exists {
+        table_count(connection, table)
+    } else {
+        Ok(0)
+    }
+}
+
+fn app_state_array_count(connection: &Connection, key: &str) -> Result<i64, String> {
+    let json: Option<String> = connection
+        .query_row(
+            "SELECT value_json FROM app_state WHERE key = 'main'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(json) = json else {
+        return Ok(0);
+    };
+    let state: Value = serde_json::from_str(&json)
+        .map_err(|_| "設定データのJSONが壊れているため、件数を取得できません。".to_string())?;
+    Ok(state
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| items.len() as i64)
+        .unwrap_or(0))
+}
+
+fn database_summary(connection: &Connection) -> Result<DatabaseSummary, String> {
+    let schema_version = connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    Ok(DatabaseSummary {
+        materials: table_count(connection, "materials")?,
+        sections: table_count(connection, "question_sections")?,
+        problems: table_count(connection, "problems")?,
+        attempts: table_count(connection, "problem_attempts")?,
+        rounds: table_count(connection, "practice_rounds")?,
+        round_targets: table_count(connection, "round_target_problems")?,
+        custom_metrics: optional_table_count(connection, "custom_metrics")?,
+        goals: app_state_array_count(connection, "goals")?,
+        study_plans: app_state_array_count(connection, "studyPlans")?,
+        schema_version,
+    })
+}
+
+fn check_sqlite_header(path: &Path) -> Result<(), String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("バックアップファイルを読み込めません: {error}"))?;
+    let mut header = [0_u8; 16];
+    if file.read_exact(&mut header).is_err() || &header != b"SQLite format 3\0" {
+        return Err("選択したファイルはSQLiteデータベースではありません。".into());
+    }
+    Ok(())
+}
+
+fn validate_goalforge_database(connection: &Connection) -> Result<i64, String> {
+    let integrity: String = connection
+        .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+        .map_err(|error| format!("SQLiteの整合性を確認できません: {error}"))?;
+    if integrity != "ok" {
+        return Err(format!("SQLiteの整合性チェックに失敗しました: {integrity}"));
+    }
+
+    let schema_version: i64 = connection
+        .query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|error| format!("スキーマバージョンを確認できません: {error}"))?;
+
+    let mut missing = Vec::new();
+    for table in REQUIRED_TABLES {
+        let exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1)",
+                [table],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            missing.push(table);
+        }
+    }
+    if schema_version >= 5 {
+        let custom_metrics_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'custom_metrics')",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !custom_metrics_exists {
+            missing.push("custom_metrics");
+        }
+    }
+    if !missing.is_empty() {
+        return Err(format!(
+            "GoalForgeデータベースに必要なテーブルがありません: {}",
+            missing.join(", ")
+        ));
+    }
+
+    if schema_version > CURRENT_SCHEMA_VERSION {
+        return Err(format!(
+            "このバックアップのスキーマバージョンは{schema_version}です。現在のGoalForgeが対応するバージョン{CURRENT_SCHEMA_VERSION}より新しいため復元できません。"
+        ));
+    }
+    Ok(schema_version)
+}
+
+fn check_foreign_keys(connection: &Connection) -> Result<(), String> {
+    let mut statement = connection
+        .prepare("PRAGMA foreign_key_check")
+        .map_err(|error| error.to_string())?;
+    let mut rows = statement.query([]).map_err(|error| error.to_string())?;
+    if rows.next().map_err(|error| error.to_string())?.is_some() {
+        return Err("外部キー整合性チェックに失敗しました。".into());
+    }
+    Ok(())
+}
+
+fn online_backup(source: &Connection, destination: &mut Connection) -> Result<(), String> {
+    let backup = Backup::new(source, destination).map_err(|error| error.to_string())?;
+    backup
+        .run_to_completion(64, Duration::from_millis(20), None)
+        .map_err(|error| error.to_string())
+}
+
+fn finalize_backup_file(connection: &Connection) -> Result<(), String> {
+    connection
+        .execute_batch("PRAGMA journal_mode = DELETE;")
+        .map_err(|error| format!("バックアップファイルを確定できません: {error}"))?;
+    validate_goalforge_database(connection)?;
+    check_foreign_keys(connection)
+}
+
+fn remove_sqlite_sidecars(path: &Path) {
+    let path = path.to_string_lossy();
+    let _ = fs::remove_file(format!("{path}-wal"));
+    let _ = fs::remove_file(format!("{path}-shm"));
+}
+
+fn open_read_only(path: &Path) -> Result<Connection, String> {
+    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| format!("SQLiteデータベースを開けません: {error}"))
+}
+
+#[tauri::command]
+fn get_database_summary(database: State<Database>) -> Result<DatabaseSummary, String> {
+    let connection = database
+        .connection
+        .lock()
+        .map_err(|error| error.to_string())?;
+    database_summary(&connection)
+}
+
+#[tauri::command]
+fn create_database_backup(
+    database: State<Database>,
+    destination: String,
+) -> Result<DatabaseSummary, String> {
+    let destination = PathBuf::from(destination);
+    let parent = destination
+        .parent()
+        .ok_or("バックアップの保存先が正しくありません。")?;
+    fs::create_dir_all(parent).map_err(|error| format!("保存先を作成できません: {error}"))?;
+    let temporary = parent.join(format!(".goalforge-backup-{}.tmp", Uuid::new_v4()));
+    let result = (|| {
+        let source = database
+            .connection
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let mut target = Connection::open(&temporary)
+            .map_err(|error| format!("バックアップファイルを作成できません: {error}"))?;
+        online_backup(&source, &mut target)
+            .map_err(|error| format!("完全バックアップに失敗しました: {error}"))?;
+        finalize_backup_file(&target)?;
+        let summary = database_summary(&target)?;
+        drop(target);
+        remove_sqlite_sidecars(&destination);
+        fs::rename(&temporary, &destination)
+            .map_err(|error| format!("バックアップファイルを保存できません: {error}"))?;
+        Ok(summary)
+    })();
+    if temporary.exists() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+#[tauri::command]
+fn inspect_database_backup(path: String) -> Result<DatabaseSummary, String> {
+    let path = PathBuf::from(path);
+    check_sqlite_header(&path)?;
+    let connection = open_read_only(&path)?;
+    validate_goalforge_database(&connection)?;
+    check_foreign_keys(&connection)?;
+    database_summary(&connection)
+}
+
+#[tauri::command]
+fn restore_database_backup(
+    database: State<Database>,
+    path: String,
+) -> Result<RestoreResult, String> {
+    let source_path = PathBuf::from(path);
+    check_sqlite_header(&source_path)?;
+    let source = open_read_only(&source_path)?;
+    let source_version = validate_goalforge_database(&source)?;
+    check_foreign_keys(&source)?;
+
+    let data_directory = database
+        .path
+        .parent()
+        .ok_or("データベースの保存先を確認できません。")?;
+    let restore_candidate =
+        data_directory.join(format!(".goalforge-restore-{}.sqlite", Uuid::new_v4()));
+    let backup_directory = data_directory.join("backups");
+    fs::create_dir_all(&backup_directory)
+        .map_err(|error| format!("自動バックアップの保存先を作成できません: {error}"))?;
+    let automatic_backup = backup_directory.join(format!(
+        "goalforge-before-restore-{}-{}.sqlite",
+        Local::now().format("%Y%m%d-%H%M%S-%3f"),
+        Uuid::new_v4()
+    ));
+
+    let result = (|| {
+        let mut candidate = Connection::open(&restore_candidate)
+            .map_err(|error| format!("復元用の一時DBを作成できません: {error}"))?;
+        online_backup(&source, &mut candidate)
+            .map_err(|error| format!("復元用DBの作成に失敗しました: {error}"))?;
+        if source_version < CURRENT_SCHEMA_VERSION {
+            apply_migrations(&mut candidate)
+                .map_err(|error| format!("バックアップのMigrationに失敗しました: {error}"))?;
+        }
+        validate_goalforge_database(&candidate)?;
+        check_foreign_keys(&candidate)?;
+
+        let mut current = database
+            .connection
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let mut safety_copy = Connection::open(&automatic_backup)
+            .map_err(|error| format!("現在データの自動バックアップを作成できません: {error}"))?;
+        online_backup(&current, &mut safety_copy)
+            .map_err(|error| format!("現在データの自動バックアップに失敗しました: {error}"))?;
+        finalize_backup_file(&safety_copy)?;
+        drop(safety_copy);
+
+        online_backup(&candidate, &mut current)
+            .map_err(|error| format!("データベースの復元に失敗しました: {error}"))?;
+        configure_database(&current)?;
+        validate_goalforge_database(&current)?;
+        check_foreign_keys(&current)?;
+        let summary = database_summary(&current)?;
+        Ok(RestoreResult {
+            summary,
+            automatic_backup_path: automatic_backup.to_string_lossy().into_owned(),
+        })
+    })();
+    if result.is_err() && automatic_backup.exists() {
+        if let Ok(safety_copy) = open_read_only(&automatic_backup) {
+            if let Ok(mut current) = database.connection.lock() {
+                let _ = online_backup(&safety_copy, &mut current);
+                let _ = configure_database(&current);
+            }
+        }
+    }
+    drop(source);
+    if restore_candidate.exists() {
+        let _ = fs::remove_file(&restore_candidate);
+    }
+    result
 }
 
 #[tauri::command]
@@ -1276,8 +1618,169 @@ fn invoke_anki_connect_blocking(action: String, params: Value) -> Result<Value, 
         .map_err(|error| format!("AnkiConnectのJSON応答を読み取れませんでした: {error}"))
 }
 
+#[cfg(test)]
+mod backup_tests {
+    use super::*;
+
+    fn temporary_database(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("goalforge-{name}-{}.sqlite", Uuid::new_v4()))
+    }
+
+    fn remove_database(path: &Path) {
+        let _ = fs::remove_file(path);
+        let _ = fs::remove_file(format!("{}-wal", path.to_string_lossy()));
+        let _ = fs::remove_file(format!("{}-shm", path.to_string_lossy()));
+    }
+
+    #[test]
+    fn full_backup_and_restore_preserves_all_data_groups() {
+        let source_path = temporary_database("source");
+        let backup_path = temporary_database("backup");
+        let mut source = initialize_database(&source_path).expect("source database");
+        source
+            .execute(
+                "INSERT INTO app_state(key,value_json,updated_at) VALUES ('main',?1,?2)",
+                params![
+                    serde_json::json!({
+                        "goals": [{"id": "goal-1"}],
+                        "studyPlans": [{"id": "plan-1"}]
+                    })
+                    .to_string(),
+                    now()
+                ],
+            )
+            .expect("app state");
+        source
+            .execute(
+                "INSERT INTO materials(id,title,created_at,updated_at) VALUES ('material-1','教材',?1,?1)",
+                [now()],
+            )
+            .expect("material");
+        source
+            .execute(
+                "INSERT INTO question_banks(id,material_id,title,created_at,updated_at)
+                 VALUES ('bank-1','material-1','教材',?1,?1)",
+                [now()],
+            )
+            .expect("bank");
+        source
+            .execute(
+                "INSERT INTO question_sections(id,question_bank_id,title,sort_order,evaluation_type,is_mock_exam_section)
+                 VALUES ('section-1','bank-1','セクション',0,'binary',0)",
+                [],
+            )
+            .expect("section");
+        source
+            .execute(
+                "INSERT INTO problems(id,section_id,number,title,sort_order,default_max_score_milli,review_status)
+                 VALUES ('problem-1','section-1','1','問題',0,1000,'active')",
+                [],
+            )
+            .expect("problem");
+        source
+            .execute(
+                "INSERT INTO practice_rounds(id,question_bank_id,round_number,started_at)
+                 VALUES ('round-1','bank-1',1,?1)",
+                [now()],
+            )
+            .expect("round");
+        source
+            .execute(
+                "INSERT INTO round_target_problems(round_id,problem_id,sort_order)
+                 VALUES ('round-1','problem-1',0)",
+                [],
+            )
+            .expect("round target");
+        source
+            .execute(
+                "INSERT INTO problem_attempts(
+                    id,problem_id,round_id,answered_at,attempt_number,earned_score_milli,max_score_milli
+                 ) VALUES ('attempt-1','problem-1','round-1',?1,1,1000,1000)",
+                [now()],
+            )
+            .expect("attempt");
+
+        let expected = database_summary(&source).expect("source summary");
+        let mut backup = Connection::open(&backup_path).expect("backup database");
+        online_backup(&source, &mut backup).expect("online backup");
+        finalize_backup_file(&backup).expect("finalize backup");
+        let backup_journal_mode: String = backup
+            .query_row("PRAGMA journal_mode", [], |row| row.get(0))
+            .expect("backup journal mode");
+        assert_eq!(backup_journal_mode, "delete");
+        assert_eq!(
+            database_summary(&backup).expect("backup summary").materials,
+            1
+        );
+
+        source
+            .execute("DELETE FROM materials", [])
+            .expect("mutate source");
+        online_backup(&backup, &mut source).expect("online restore");
+        configure_database(&source).expect("reconfigure");
+        validate_goalforge_database(&source).expect("restored integrity");
+        check_foreign_keys(&source).expect("restored foreign keys");
+        let restored = database_summary(&source).expect("restored summary");
+
+        assert_eq!(restored.materials, expected.materials);
+        assert_eq!(restored.sections, expected.sections);
+        assert_eq!(restored.problems, expected.problems);
+        assert_eq!(restored.attempts, expected.attempts);
+        assert_eq!(restored.rounds, expected.rounds);
+        assert_eq!(restored.round_targets, expected.round_targets);
+        assert_eq!(restored.custom_metrics, expected.custom_metrics);
+        assert_eq!(restored.goals, expected.goals);
+        assert_eq!(restored.study_plans, expected.study_plans);
+        assert_eq!(restored.schema_version, CURRENT_SCHEMA_VERSION);
+
+        drop(backup);
+        drop(source);
+        remove_database(&backup_path);
+        remove_database(&source_path);
+    }
+
+    #[test]
+    fn restored_old_database_is_migrated_to_current_schema() {
+        let path = temporary_database("migration");
+        let mut connection = Connection::open(&path).expect("old database");
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .expect("schema v1");
+        connection
+            .execute(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES (1,?1)",
+                [now()],
+            )
+            .expect("migration marker");
+
+        apply_migrations(&mut connection).expect("apply migrations");
+        validate_goalforge_database(&connection).expect("migrated integrity");
+        check_foreign_keys(&connection).expect("migrated foreign keys");
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .expect("schema version");
+        let supplemental_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM pragma_table_info('problems') WHERE name='supplemental_info'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("supplemental column");
+        assert_eq!(version, CURRENT_SCHEMA_VERSION);
+        assert!(supplemental_exists);
+
+        drop(connection);
+        remove_database(&path);
+    }
+}
+
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             let data_dir = app.path().app_data_dir()?;
             migrate_legacy_bundle_database(&data_dir).map_err(std::io::Error::other)?;
@@ -1291,6 +1794,10 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             database_info,
+            get_database_summary,
+            create_database_backup,
+            inspect_database_backup,
+            restore_database_backup,
             load_app_state,
             save_app_state,
             migrate_legacy_state,

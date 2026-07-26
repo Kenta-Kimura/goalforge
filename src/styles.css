@@ -2797,7 +2797,7 @@ dl {
 
 .data-management-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(280px, 0.75fr);
+  grid-template-columns: 1fr;
   gap: 16px;
 }
 
@@ -2825,22 +2825,44 @@ dl {
   font-weight: 900;
 }
 
-.file-button {
-  align-items: center;
-  cursor: pointer;
-  display: inline-flex;
-}
-
-.file-button input {
-  display: none;
-}
-
-.plain-list {
-  color: var(--muted);
+.database-summary-groups {
   display: grid;
-  gap: 10px;
+  gap: 16px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.database-summary-group {
+  display: grid;
+  gap: 8px;
+}
+
+.database-summary-group h3 {
   margin: 0;
-  padding-left: 18px;
+}
+
+.database-summary-group .backup-summary {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.database-summary-groups.compact {
+  grid-template-columns: 1fr;
+}
+
+.database-meta,
+.restore-preview {
+  color: var(--muted);
+}
+
+.restore-preview {
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 14px;
+  padding-top: 16px;
+}
+
+.restore-preview code,
+.database-meta code {
+  overflow-wrap: anywhere;
 }
 
 .today-panel dd {
@@ -3009,6 +3031,7 @@ dl {
   .resource-row,
   .resource-card dl,
   .plan-resource-card dl,
+  .database-summary-groups,
   .backup-summary,
   .pace-row dl {
     grid-template-columns: 1fr;

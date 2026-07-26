@@ -6,6 +6,8 @@ GoalForgeデスクトップ版はSQLiteを使用します。DBファイル`goalf
 
 Bundle IDを`jp.kenta.goalforge.desktop`へ変更した初回起動時は、新しい保存先にDBがない場合に限り、旧Bundle ID `jp.kenta.goalforge`の`goalforge.sqlite`とWAL関連ファイルを新しい保存先へコピーします。旧DBは自動削除しません。
 
+SQLiteは教材、演習履歴、目標、学習計画、設定を含むすべての永続データの正本です。完全バックアップはSQLite全体を対象とします。従来のJSONは旧形式バックアップの互換読み込みに限って使用します。
+
 - 外部キー: 有効
 - Journal mode: WAL
 - 得点: 1000分の1点単位の整数
@@ -42,6 +44,7 @@ erDiagram
 | `practice_rounds` | 教材ごとの演習周回 | 周回番号、開始・完了日時 |
 | `round_target_problems` | 周回開始時の対象問題スナップショット | 周回と問題の中間テーブル |
 | `problem_attempts` | 問題単位の解答履歴 | 解答順、得点、満点、確信度、メモ、学習日時 |
+| `custom_metrics` | 教材ごとのカスタム集計指標 | 表示順、定義、既定指標、削除状態 |
 
 ## データ設計上の原則
 
@@ -80,6 +83,8 @@ Migration SQLは`src-tauri/migrations/`へ`NNN_description.sql`形式で追加�
 2. `002_problem_details_and_confidence.sql`: 問題補足情報と3段階の確信度
 3. `003_material_master.sql`: 教材と演習構造の1対1制約
 4. `004_attempt_number.sql`: 学習日時のNULL許可とProblem単位の解答順
+5. `005_custom_metrics.sql`: 教材ごとのカスタム集計指標
+6. `006_answer_text.sql`: 問題の正答と解答履歴の実回答
 
 Migration 004は`problem_attempts`を再作成します。既存AttemptはProblemごとに
 `answered_at ASC, id ASC`で並べ、`ROW_NUMBER()`により`attempt_number`を1から採番します。
@@ -96,8 +101,34 @@ Migration 004は`problem_attempts`を再作成します。既存AttemptはProble
 - 外部キー、ユニーク制約、チェック制約、インデックスの再現を確認します。
 - 変更後は既存DBからのMigrationと新規DB作成の両方を確認します。
 
+## 完全バックアップ
+
+SQLite Online Backup APIを使用し、現在の接続から単一の`.sqlite`ファイルへスナップショットを作成します。DBがWALモードで更新されている間も、SQLiteが保証する一貫した時点の内容を保存します。作成後に次を確認してから保存完了とします。
+
+- `PRAGMA integrity_check = ok`
+- GoalForgeの必須テーブルが存在する
+- `PRAGMA foreign_key_check`に違反がない
+- データ概要を取得できる
+
+## 完全復元
+
+選択したバックアップは現在DBへ直接上書きせず、一時DBへコピーして検証します。
+
+1. SQLiteファイルヘッダーを確認
+2. `PRAGMA integrity_check`
+3. 必須テーブル確認
+4. `schema_migrations`の最大バージョン確認
+5. 古い対応バージョンへMigration適用
+6. `PRAGMA foreign_key_check`
+7. 教材・問題・解答履歴などの件数確認
+8. 現在DBを`backups/goalforge-before-restore-*.sqlite`へ自動バックアップ
+9. 検証済み一時DBを現在の接続へ復元
+10. WAL、外部キー、busy timeoutなどの接続設定を再適用
+11. 画面状態をSQLiteから再読込
+
+現在のアプリが対応するバージョンより新しいバックアップは、データを壊さないため復元を拒否します。古いバックアップは一時DB上で現在バージョンまでMigrationし、Migrationがすべて成功した場合だけ復元します。
+
 ## TODO
 
 - スキーマMigration適用処理を連番リスト化し、追加漏れを検知する
-- バックアップJSONのスキーマバージョンと復元互換性を文書化する
 - クラウド同期を導入する場合の同期メタデータと競合解決方式を設計する

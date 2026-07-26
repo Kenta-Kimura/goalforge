@@ -3,13 +3,30 @@ import type { AppState } from "../types";
 import { invokeDesktop, isTauriRuntime } from "./tauri";
 
 const STORAGE_KEY = "goalforge.appState.v2";
-const BACKUP_VERSION = 1;
 
-interface BackupFile {
+interface LegacyBackupFile {
   app: "GoalForge";
   version: number;
   exportedAt: string;
   state: AppState;
+}
+
+export interface DatabaseSummary {
+  materials: number;
+  sections: number;
+  problems: number;
+  attempts: number;
+  rounds: number;
+  roundTargets: number;
+  customMetrics: number;
+  goals: number;
+  studyPlans: number;
+  schemaVersion: number;
+}
+
+export interface RestoreResult {
+  summary: DatabaseSummary;
+  automaticBackupPath: string;
 }
 
 export function loadState(): AppState {
@@ -42,36 +59,35 @@ export async function getDatabaseInfo() {
   return invokeDesktop<{ path: string; schemaVersion: number }>("database_info");
 }
 
-export function createBackupJson(state: AppState) {
-  const backup: BackupFile = {
-    app: "GoalForge",
-    version: BACKUP_VERSION,
-    exportedAt: new Date().toISOString(),
-    state,
-  };
-
-  return JSON.stringify(backup, null, 2);
+export function getDatabaseSummary() {
+  return invokeDesktop<DatabaseSummary>("get_database_summary");
 }
 
-export function parseBackupJson(input: string): AppState {
-  const parsed = JSON.parse(input) as Partial<BackupFile> | AppState;
+export function createDatabaseBackup(destination: string) {
+  return invokeDesktop<DatabaseSummary>("create_database_backup", { destination });
+}
 
-  if (isBackupFile(parsed)) {
+export function inspectDatabaseBackup(path: string) {
+  return invokeDesktop<DatabaseSummary>("inspect_database_backup", { path });
+}
+
+export function restoreDatabaseBackup(path: string) {
+  return invokeDesktop<RestoreResult>("restore_database_backup", { path });
+}
+
+export function parseLegacyBackupJson(input: string): AppState {
+  const parsed = JSON.parse(input) as Partial<LegacyBackupFile> | AppState;
+  if (
+    Boolean(parsed) &&
+    typeof parsed === "object" &&
+    "app" in parsed &&
+    parsed.app === "GoalForge" &&
+    "state" in parsed &&
+    Boolean(parsed.state)
+  ) {
     return removeDeprecatedSampleData({ ...initialState, ...parsed.state });
   }
-
   return removeDeprecatedSampleData({ ...initialState, ...(parsed as AppState) });
-}
-
-function isBackupFile(value: Partial<BackupFile> | AppState): value is BackupFile {
-  return (
-    Boolean(value) &&
-    typeof value === "object" &&
-    "app" in value &&
-    value.app === "GoalForge" &&
-    "state" in value &&
-    Boolean(value.state)
-  );
 }
 
 function removeDeprecatedSampleData(state: AppState): AppState {

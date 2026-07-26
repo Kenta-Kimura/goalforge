@@ -1,11 +1,16 @@
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState } from "react";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  createBackupJson,
+  createDatabaseBackup,
   getDatabaseInfo,
+  getDatabaseSummary,
   initializeState,
+  inspectDatabaseBackup,
   loadState,
-  parseBackupJson,
+  parseLegacyBackupJson,
+  restoreDatabaseBackup,
   saveState,
+  type DatabaseSummary,
 } from "./lib/storage";
 import { ExerciseView } from "./questionBank/QuestionBankView";
 import { MaterialMasterView } from "./questionBank/MaterialMasterView";
@@ -585,13 +590,11 @@ function App() {
 
         {activeView === "data" && (
           <DataManagementView
-            onImport={(nextState) => {
+            onRestored={(nextState) => {
               setState(nextState);
               setSelectedGoalId(nextState.goals[0]?.id ?? "chuken-2");
-              setActiveView("dashboard");
             }}
             onNotify={showToast}
-            state={state}
           />
         )}
       </main>
@@ -2150,57 +2153,118 @@ function SyncView({
 }
 
 function DataManagementView({
-  state,
-  onImport,
+  onRestored,
   onNotify,
 }: {
-  state: AppState;
-  onImport: (state: AppState) => void;
+  onRestored: (state: AppState) => void;
   onNotify: (message: string) => void;
 }) {
+  const [summary, setSummary] = useState<DatabaseSummary | null>(null);
+  const [pendingRestore, setPendingRestore] = useState<{
+    path: string;
+    summary: DatabaseSummary;
+  } | null>(null);
+  const [busy, setBusy] = useState<"loading" | "backup" | "inspect" | "restore" | null>("loading");
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const [databaseInfo, setDatabaseInfo] = useState<{ path: string; schemaVersion: number } | null>(null);
+
   useEffect(() => {
-    void getDatabaseInfo().then(setDatabaseInfo).catch(() => setDatabaseInfo(null));
+    void Promise.all([getDatabaseInfo(), getDatabaseSummary()])
+      .then(([info, nextSummary]) => {
+        setDatabaseInfo(info);
+        setSummary(nextSummary);
+        setError("");
+      })
+      .catch((reason) => setError(`データ概要を取得できません: ${String(reason)}`))
+      .finally(() => setBusy(null));
   }, []);
-  const backupSummary = {
-    goals: state.goals.length,
-    resources: state.studyPlans.reduce((sum, plan) => sum + plan.resources.length, 0),
-    activities: state.activities.length,
-    plans: state.studyPlans.length,
-  };
 
-  function handleExport() {
-    const json = createBackupJson(state);
-    const blob = new Blob([json], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
+  async function handleBackup() {
     const date = new Date().toLocaleDateString("en-CA");
-
-    link.href = url;
-    link.download = `goalforge-backup-${date}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    onNotify("バックアップJSONをダウンロードしました。");
-    setMessage("");
+    const destination = await save({
+      defaultPath: `goalforge-backup-${date}.sqlite`,
+      filters: [{ name: "GoalForge SQLiteバックアップ", extensions: ["sqlite"] }],
+    });
+    if (!destination) return;
+    setBusy("backup");
     setError("");
+    setMessage("");
+    try {
+      const backedUpSummary = await createDatabaseBackup(destination);
+      setSummary(backedUpSummary);
+      setMessage(`完全バックアップを保存しました: ${destination}`);
+      onNotify("SQLite完全バックアップを保存しました。");
+    } catch (reason) {
+      setError(`完全バックアップを作成できません: ${String(reason)}`);
+    } finally {
+      setBusy(null);
+    }
   }
 
-  async function handleImport(event: ChangeEvent<HTMLInputElement>) {
+  async function handleSelectRestore() {
+    const path = await open({
+      multiple: false,
+      directory: false,
+      filters: [{ name: "GoalForge SQLiteバックアップ", extensions: ["sqlite", "db"] }],
+    });
+    if (!path) return;
+    setBusy("inspect");
+    setPendingRestore(null);
+    setError("");
+    setMessage("");
+    try {
+      const inspected = await inspectDatabaseBackup(path);
+      setPendingRestore({ path, summary: inspected });
+    } catch (reason) {
+      setError(`バックアップを確認できません: ${String(reason)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleRestore() {
+    if (!pendingRestore) return;
+    const confirmed = window.confirm(
+      "現在のGoalForgeデータはすべて置き換えられます。\n復元前のデータは自動バックアップされます。\n\n復元を続けますか？",
+    );
+    if (!confirmed) return;
+    setBusy("restore");
+    setError("");
+    setMessage("");
+    try {
+      const result = await restoreDatabaseBackup(pendingRestore.path);
+      const restoredState = await initializeState();
+      onRestored(restoredState.state);
+      setSummary(result.summary);
+      setPendingRestore(null);
+      setMessage(
+        `完全復元が完了しました。復元前の自動バックアップ: ${result.automaticBackupPath}`,
+      );
+      onNotify("SQLite完全バックアップから復元しました。");
+    } catch (reason) {
+      setError(`完全復元に失敗しました: ${String(reason)}`);
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function handleLegacyJsonImport(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     if (!file) return;
-
+    setError("");
+    setMessage("");
     try {
-      const text = await file.text();
-      const nextState = parseBackupJson(text);
-      onImport(nextState);
-      onNotify("バックアップJSONを読み込みました。");
-      setError("");
-      setMessage("");
+      const nextState = parseLegacyBackupJson(await file.text());
+      const confirmed = window.confirm(
+        "旧形式JSONに含まれる目標・学習計画・設定を読み込みます。\n教材・問題・解答履歴などSQLite固有データは変更されません。\n\n読み込みを続けますか？",
+      );
+      if (!confirmed) return;
+      onRestored(nextState);
+      setMessage("旧形式JSONから目標・学習計画・設定を読み込みました。");
+      onNotify("旧形式JSONバックアップを読み込みました。");
     } catch {
-      setError("バックアップJSONを読み込めませんでした。ファイルの内容を確認してください。");
-      setMessage("");
+      setError("旧形式JSONを読み込めませんでした。ファイルの内容を確認してください。");
     } finally {
       event.target.value = "";
     }
@@ -2210,52 +2274,123 @@ function DataManagementView({
     <section className="data-management-layout">
       <div className="panel data-management-panel">
         <div className="section-heading">
-          <h2>外部ファイルバックアップ</h2>
-          <p>SQLiteに保存された全学習目標のデータをJSONファイルとして保存し、必要なときに復元できます。</p>
+          <h2>データ概要</h2>
+          <p>GoalForgeの正本であるSQLiteから、現在のデータ件数を表示します。</p>
         </div>
-        <dl className="backup-summary">
-          <div>
-            <dt>学習目標</dt>
-            <dd>{backupSummary.goals}</dd>
-          </div>
-          <div>
-            <dt>教材</dt>
-            <dd>{backupSummary.resources}</dd>
-          </div>
-          <div>
-            <dt>学習記録</dt>
-            <dd>{backupSummary.activities}</dd>
-          </div>
-          <div>
-            <dt>学習計画</dt>
-            <dd>{backupSummary.plans}</dd>
-          </div>
-        </dl>
-        <div className="button-row">
-          <button className="primary-button" onClick={handleExport} type="button">
-            JSONバックアップを保存
-          </button>
-          <label className="secondary-button file-button">
-            JSONバックアップを読み込む
-            <input accept="application/json,.json" onChange={handleImport} type="file" />
-          </label>
+        {busy === "loading" && <p>SQLiteの件数を確認しています…</p>}
+        {summary && <DatabaseSummaryView summary={summary} />}
+        <p className="database-meta">
+          保存先: <code>{databaseInfo?.path ?? "デスクトップ版で確認できます"}</code>
+          <br />
+          DBスキーマバージョン: {summary?.schemaVersion ?? databaseInfo?.schemaVersion ?? "—"}
+        </p>
+      </div>
+
+      <div className="panel data-management-panel">
+        <div className="section-heading">
+          <h2>完全バックアップ</h2>
+          <p>
+            教材・問題・解答履歴・周回・設定を含むGoalForgeデータ全体を、1つのSQLiteファイルへ安全に保存します。
+          </p>
         </div>
-        {message && <p className="success-text">{message}</p>}
-        {error && <p className="error-text">{error}</p>}
+        <button
+          className="primary-button"
+          disabled={busy !== null}
+          onClick={() => void handleBackup()}
+          type="button"
+        >
+          {busy === "backup" ? "バックアップ中…" : "完全バックアップを保存"}
+        </button>
+      </div>
+
+      <div className="panel data-management-panel">
+        <div className="section-heading">
+          <h2>完全復元</h2>
+          <p>
+            SQLiteバックアップの整合性とスキーマを確認してから、GoalForgeデータ全体を置き換えます。
+          </p>
+        </div>
+        <button
+          className="secondary-button"
+          disabled={busy !== null}
+          onClick={() => void handleSelectRestore()}
+          type="button"
+        >
+          {busy === "inspect" ? "バックアップを確認中…" : "バックアップを選択"}
+        </button>
+        {pendingRestore && (
+          <div className="restore-preview">
+            <h3>復元するデータ</h3>
+            <DatabaseSummaryView summary={pendingRestore.summary} compact />
+            <p><code>{pendingRestore.path}</code></p>
+            <p className="delete-warning">現在のデータはすべて置き換えられます。</p>
+            <div className="button-row">
+              <button
+                className="danger-button"
+                disabled={busy !== null}
+                onClick={() => void handleRestore()}
+                type="button"
+              >
+                {busy === "restore" ? "復元中…" : "このバックアップから復元"}
+              </button>
+              <button
+                disabled={busy !== null}
+                onClick={() => setPendingRestore(null)}
+                type="button"
+              >
+                キャンセル
+              </button>
+            </div>
+          </div>
+        )}
       </div>
       <div className="panel data-management-panel">
-        <h2>保存の扱い</h2>
-        <ul className="plain-list">
-          <li>通常利用中の学習データはmacOSのApplication Support配下にあるSQLiteへ自動保存します。</li>
-          <li>保存先: <code>{databaseInfo?.path ?? "デスクトップ版で確認できます"}</code></li>
-          <li>DBスキーマバージョン: {databaseInfo?.schemaVersion ?? "—"}</li>
-          <li>LocalStorageには消失しても復元可能なUI設定だけを保存します。</li>
-          <li>JSONバックアップは全学習目標をまとめて外部ファイルとして保存します。</li>
-          <li>読み込み時は現在のGoalForgeデータ全体をバックアップ内容で置き換えます。</li>
-          <li>Safariでも使える方式を優先しているため、任意ファイルへの自動上書き保存は行いません。</li>
-        </ul>
+        <div className="section-heading">
+          <h2>旧形式JSONの読み込み</h2>
+          <p>
+            従来のJSONバックアップから、目標・学習計画・設定を読み込みます。教材・問題・解答履歴などSQLite固有データは復元されません。
+          </p>
+        </div>
+        <label className="secondary-button file-button">
+          旧形式JSONバックアップを読み込む
+          <input accept="application/json,.json" onChange={handleLegacyJsonImport} type="file" />
+        </label>
       </div>
+      {message && <p className="panel success-text">{message}</p>}
+      {error && <p className="panel error-text">{error}</p>}
     </section>
+  );
+}
+
+function DatabaseSummaryView({
+  summary,
+  compact = false,
+}: {
+  summary: DatabaseSummary;
+  compact?: boolean;
+}) {
+  const groups = [
+    { title: "教材", items: [["教材", summary.materials], ["セクション", summary.sections], ["問題", summary.problems]] },
+    { title: "演習", items: [["解答履歴", summary.attempts], ["周回", summary.rounds], ["周回対象", summary.roundTargets]] },
+    { title: "設定", items: [["学習目標", summary.goals], ["学習計画", summary.studyPlans], ["カスタム指標", summary.customMetrics]] },
+  ] as const;
+
+  return (
+    <div className={`database-summary-groups${compact ? " compact" : ""}`}>
+      {groups.map((group) => (
+        <section className="database-summary-group" key={group.title}>
+          <h3>{group.title}</h3>
+          <dl className="backup-summary">
+            {group.items.map(([label, count]) => (
+              <div key={label}>
+                <dt>{label}</dt>
+                <dd>{count}</dd>
+              </div>
+            ))}
+          </dl>
+        </section>
+      ))}
+    </div>
   );
 }
 

@@ -14,7 +14,7 @@ GoalForgeでは、教材管理をマスター、演習を学習履歴、ダッ�
 - 中国語検定教材専用インポートCLI
 - 目標、教材進捗、学習計画、ペースの管理
 - AnkiConnect同期とオフライン時の最終同期データ表示
-- SQLite Migration、旧LocalStorage移行
+- SQLite Migration、旧LocalStorage移行、SQLite完全バックアップ・復元
 
 ## スクリーンショット
 
@@ -55,6 +55,12 @@ TODO: ダッシュボード、教材管理、演習、解答履歴のスクリ�
 - LocalStorageは旧Web版からの初回移行元と、消失しても復元可能なUI設定だけに限定
 
 旧Web版の `goalforge.appState.v2` が存在し、SQLite側にデータがない場合は、初回起動時に1トランザクションで移行します。成功後も旧LocalStorageデータは削除しません。移行済みバージョンをSQLiteに記録するため、重複移行せず、失敗時は再実行できます。
+
+### 完全バックアップと復元
+
+「データ管理」では、教材、問題、解答履歴、周回、目標、学習計画、Migration履歴を含むSQLite全体を1つの`.sqlite`ファイルへ保存します。バックアップ作成にはSQLite Online Backup APIを使用するため、WALモードで利用中でも一貫したスナップショットを取得できます。従来のJSONバックアップは、目標・学習計画・設定の互換読み込みに限って利用できます。
+
+復元時は、選択したファイルについてSQLite形式、`PRAGMA integrity_check`、必須テーブル、外部キー、スキーマバージョンを確認します。古い対応スキーマにはMigrationを適用し、新しすぎるスキーマは復元しません。確定後は現在のDBをApplication Support配下の`backups`へ自動退避してから、検証済みDBへ置き換えて再読込します。
 
 ## セットアップ
 
