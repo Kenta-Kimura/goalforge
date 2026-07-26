@@ -6,6 +6,8 @@ use std::{collections::HashSet, fs, path::PathBuf, sync::Mutex};
 use tauri::{Manager, State};
 use uuid::Uuid;
 
+pub mod chuken3_import;
+
 struct Database {
     connection: Mutex<Connection>,
     path: PathBuf,
