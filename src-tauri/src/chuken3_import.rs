@@ -1,5 +1,6 @@
 use super::{
-    initialize_database, now, save_bank_transaction, Problem, QuestionBank, QuestionSection,
+    initialize_database, load_banks, now, save_bank_transaction, Problem, QuestionBank,
+    QuestionSection,
 };
 use rusqlite::{params, Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
@@ -74,6 +75,20 @@ pub fn preflight(database_path: &Path) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     configure_read_connection(&connection)?;
     check_database_ready(&connection)
+}
+
+pub fn verify_app_load(database_path: &Path) -> Result<(usize, usize), String> {
+    let connection = Connection::open_with_flags(database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|error| error.to_string())?;
+    configure_read_connection(&connection)?;
+    let banks = load_banks(&connection)?;
+    let attempts = banks
+        .iter()
+        .flat_map(|bank| bank.sections.iter())
+        .flat_map(|section| section.problems.iter())
+        .map(|problem| problem.attempts.len())
+        .sum();
+    Ok((banks.len(), attempts))
 }
 
 pub fn apply(

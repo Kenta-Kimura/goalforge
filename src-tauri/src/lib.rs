@@ -490,7 +490,7 @@ fn load_attempts(connection: &Connection, problem_id: &str) -> Result<Vec<Proble
                 id: row.get(0)?,
                 problem_id: problem_id.into(),
                 round_id: row.get(1)?,
-                answered_at: row.get(2)?,
+                answered_at: row.get::<_, Option<String>>(2)?,
                 attempt_number: row.get(3)?,
                 earned_score: score(row.get(4)?),
                 max_score: score(row.get(5)?),
