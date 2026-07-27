@@ -65,6 +65,54 @@ export function calculateBankSummary(bank: QuestionBank) {
   };
 }
 
+export interface PracticeRoundAccuracy {
+  roundNumber: number;
+  correctCount: number;
+  problemCount: number;
+  accuracyRate: number;
+}
+
+export function calculatePracticeRoundAccuracies(bank: QuestionBank): PracticeRoundAccuracy[] {
+  return [...bank.rounds]
+    .sort((left, right) => left.roundNumber - right.roundNumber)
+    .map((round) => {
+      const summary = calculateRoundSummary(bank, round);
+      return {
+        roundNumber: round.roundNumber,
+        correctCount: summary.correct,
+        problemCount: summary.answered,
+        accuracyRate: summary.answered === 0 ? null : summary.correct / summary.answered,
+      };
+    })
+    .filter((summary): summary is PracticeRoundAccuracy => summary.accuracyRate !== null);
+}
+
+export interface PracticeRoundHistoryEntry {
+  roundId: string;
+  roundNumber: number;
+  attempt?: ProblemAttempt;
+}
+
+export function getPracticeRoundHistory(
+  bank: QuestionBank,
+  problem: Problem,
+): PracticeRoundHistoryEntry[] {
+  const latestAttemptByRound = new Map<string, ProblemAttempt>();
+  for (const attempt of problem.attempts) {
+    const current = latestAttemptByRound.get(attempt.roundId);
+    if (!current || current.attemptNumber < attempt.attemptNumber) {
+      latestAttemptByRound.set(attempt.roundId, attempt);
+    }
+  }
+  return [...bank.rounds]
+    .sort((left, right) => left.roundNumber - right.roundNumber)
+    .map((round) => ({
+      roundId: round.id,
+      roundNumber: round.roundNumber,
+      attempt: latestAttemptByRound.get(round.id),
+    }));
+}
+
 export function calculateRoundSummary(bank: QuestionBank, round: PracticeRound) {
   const target = new Set(round.targetProblemIds);
   const attempts = bank.sections

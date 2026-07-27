@@ -12,6 +12,21 @@ use tauri::{Manager, State};
 use uuid::Uuid;
 
 pub mod chuken3_import;
+pub mod custom_metric_api;
+pub mod custom_metric_evaluator;
+pub mod custom_metric_management_service;
+pub mod custom_metric_repository;
+pub mod custom_metric_service;
+pub mod custom_metrics;
+use custom_metric_api::{
+    create_custom_metric_with_connection, delete_custom_metric_with_connection,
+    get_custom_metric_summaries_from_connection, list_custom_metrics_from_connection,
+    move_custom_metric_with_connection, reset_custom_metrics_with_connection,
+    restore_default_custom_metric_with_connection, set_custom_metric_visibility_with_connection,
+    update_custom_metric_with_connection, CustomMetricDefinitionDto,
+    CustomMetricManagementErrorDto, CustomMetricSummaryDto, CustomMetricWriteDto,
+};
+use custom_metrics::{seed_default_metrics, RestoreDefaultMetricOutcome};
 
 struct Database {
     connection: Mutex<Connection>,
@@ -227,6 +242,42 @@ fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (4, ?1)",
+                [now()],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
+    let has_v5 = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !has_v5 {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute_batch(include_str!("../migrations/005_custom_metrics.sql"))
+            .map_err(|error| error.to_string())?;
+        let bank_ids = {
+            let mut statement = transaction
+                .prepare("SELECT id FROM question_banks ORDER BY id")
+                .map_err(|error| error.to_string())?;
+            let ids = statement
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            ids
+        };
+        for bank_id in bank_ids {
+            seed_default_metrics(&transaction, &bank_id)?;
+        }
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?1)",
                 [now()],
             )
             .map_err(|error| error.to_string())?;
@@ -609,11 +660,132 @@ fn save_question_bank(
         .ok_or("保存した問題集を取得できません。".into())
 }
 
+#[tauri::command]
+fn get_custom_metric_summaries(
+    database: State<Database>,
+    question_bank_id: String,
+) -> Result<Vec<CustomMetricSummaryDto>, String> {
+    let connection = database
+        .connection
+        .lock()
+        .map_err(|error| error.to_string())?;
+    get_custom_metric_summaries_from_connection(&connection, &question_bank_id)
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn list_custom_metrics(
+    database: State<Database>,
+    question_bank_id: String,
+) -> Result<Vec<CustomMetricDefinitionDto>, CustomMetricManagementErrorDto> {
+    let connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    list_custom_metrics_from_connection(&connection, &question_bank_id)
+}
+
+#[tauri::command]
+fn create_custom_metric(
+    database: State<Database>,
+    question_bank_id: String,
+    input: CustomMetricWriteDto,
+) -> Result<CustomMetricDefinitionDto, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    create_custom_metric_with_connection(&mut connection, &question_bank_id, input)
+}
+
+#[tauri::command]
+fn update_custom_metric(
+    database: State<Database>,
+    metric_id: String,
+    input: CustomMetricWriteDto,
+) -> Result<CustomMetricDefinitionDto, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    update_custom_metric_with_connection(&mut connection, &metric_id, input)
+}
+
+#[tauri::command]
+fn set_custom_metric_visibility(
+    database: State<Database>,
+    metric_id: String,
+    is_visible: bool,
+) -> Result<CustomMetricDefinitionDto, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    set_custom_metric_visibility_with_connection(&mut connection, &metric_id, is_visible)
+}
+
+#[tauri::command]
+fn move_custom_metric(
+    database: State<Database>,
+    metric_id: String,
+    new_sort_order: i32,
+) -> Result<Vec<CustomMetricDefinitionDto>, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    move_custom_metric_with_connection(&mut connection, &metric_id, new_sort_order)
+}
+
+#[tauri::command]
+fn delete_custom_metric(
+    database: State<Database>,
+    metric_id: String,
+) -> Result<(), CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    delete_custom_metric_with_connection(&mut connection, &metric_id)
+}
+
+#[tauri::command]
+fn restore_default_custom_metric(
+    database: State<Database>,
+    question_bank_id: String,
+    system_key: String,
+) -> Result<RestoreDefaultMetricOutcome, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    restore_default_custom_metric_with_connection(&mut connection, &question_bank_id, &system_key)
+}
+
+#[tauri::command]
+fn reset_custom_metrics(
+    database: State<Database>,
+    question_bank_id: String,
+) -> Result<Vec<CustomMetricDefinitionDto>, CustomMetricManagementErrorDto> {
+    let mut connection = database
+        .connection
+        .lock()
+        .map_err(|error| CustomMetricManagementErrorDto::repository(error.to_string()))?;
+    reset_custom_metrics_with_connection(&mut connection, &question_bank_id)
+}
+
 fn save_bank_transaction(transaction: &Transaction, bank: &QuestionBank) -> Result<(), String> {
     if bank.title.trim().is_empty() {
         return Err("問題集名を入力してください。".into());
     }
     let timestamp = now();
+    let bank_exists = transaction
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM question_banks WHERE id = ?1)",
+            [&bank.id],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(|error| error.to_string())?;
     transaction
         .execute(
             "INSERT INTO materials(id, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)
@@ -630,6 +802,9 @@ fn save_bank_transaction(transaction: &Transaction, bank: &QuestionBank) -> Resu
             params![bank.id, bank.material_id, bank.title, timestamp],
         )
         .map_err(|error| error.to_string())?;
+    if !bank_exists {
+        seed_default_metrics(transaction, &bank.id)?;
+    }
     for section in &bank.sections {
         transaction
             .execute(
@@ -883,6 +1058,20 @@ fn create_attempt_transaction(
             ],
         )
         .map_err(|error| error.to_string())?;
+    transaction
+        .execute(
+            "INSERT OR IGNORE INTO round_target_problems(round_id,problem_id,sort_order)
+             VALUES (
+               ?1,
+               ?2,
+               COALESCE(
+                 (SELECT MAX(sort_order) + 1 FROM round_target_problems WHERE round_id = ?1),
+                 0
+               )
+             )",
+            params![input.round_id, input.problem_id],
+        )
+        .map_err(|error| error.to_string())?;
     if let Some(status) = &input.next_review_status {
         transaction
             .execute(
@@ -1019,6 +1208,15 @@ pub fn run() {
             migrate_legacy_state,
             get_question_banks,
             save_question_bank,
+            get_custom_metric_summaries,
+            list_custom_metrics,
+            create_custom_metric,
+            update_custom_metric,
+            set_custom_metric_visibility,
+            move_custom_metric,
+            delete_custom_metric,
+            restore_default_custom_metric,
+            reset_custom_metrics,
             delete_question_bank,
             delete_question_section,
             delete_problem,
@@ -1048,6 +1246,10 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn temporary_database_path(label: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("goalforge-{label}-{}.sqlite", Uuid::new_v4()))
+    }
 
     fn database_at_v3() -> Connection {
         let connection = Connection::open_in_memory().expect("in-memory database");
@@ -1179,6 +1381,17 @@ mod tests {
         assert_eq!(created.attempt_number, 5);
         assert!(created.answered_at.is_some());
         transaction.commit().expect("commit created attempt");
+        let target_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM round_target_problems
+                   WHERE round_id='round-1' AND problem_id='problem-1'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .expect("round target after attempt creation");
+        assert!(target_exists);
 
         let loaded = load_attempts(&connection, "problem-1").expect("load attempts");
         assert_eq!(
@@ -1200,5 +1413,141 @@ mod tests {
             })
             .expect("foreign key check");
         assert_eq!(foreign_key_errors, 0);
+    }
+
+    #[test]
+    fn new_database_applies_migration_005() {
+        let path = temporary_database_path("new-database");
+        let connection = initialize_database(&path).expect("initialize new database");
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        let table_exists: bool = connection
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM sqlite_master
+                   WHERE type='table' AND name='custom_metrics'
+                 )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, 5);
+        assert!(table_exists);
+        drop(connection);
+        fs::remove_file(path).expect("remove test database");
+    }
+
+    #[test]
+    fn existing_database_applies_migration_005_and_seeds_defaults() {
+        let path = temporary_database_path("existing-database");
+        let connection = Connection::open(&path).expect("existing database");
+        connection
+            .execute_batch(
+                "PRAGMA foreign_keys = ON;
+                 PRAGMA journal_mode = DELETE;",
+            )
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/001_initial.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!(
+                "../migrations/002_problem_details_and_confidence.sql"
+            ))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/003_material_master.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../migrations/004_attempt_number.sql"))
+            .unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO schema_migrations(version,applied_at) VALUES
+                   (1,'2026-01-01'),(2,'2026-01-01'),(3,'2026-01-01'),(4,'2026-01-01');
+                 INSERT INTO materials(id,title,created_at,updated_at)
+                   VALUES ('material-existing','既存教材','2026-01-01','2026-01-01');
+                 INSERT INTO question_banks(id,material_id,title,created_at,updated_at)
+                   VALUES ('bank-existing','material-existing','既存教材','2026-01-01','2026-01-01');",
+            )
+            .unwrap();
+        drop(connection);
+
+        let connection = initialize_database(&path).expect("migrate existing database");
+        let defaults: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM custom_metrics
+                 WHERE question_bank_id='bank-existing'
+                   AND origin='default'
+                   AND deleted_at IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let version: i64 = connection
+            .query_row("SELECT MAX(version) FROM schema_migrations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(defaults, 3);
+        assert_eq!(version, 5);
+
+        connection
+            .execute("DELETE FROM materials WHERE id='material-existing'", [])
+            .unwrap();
+        let remaining: i64 = connection
+            .query_row("SELECT COUNT(*) FROM custom_metrics", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(remaining, 0);
+        drop(connection);
+        fs::remove_file(path).expect("remove test database");
+    }
+
+    #[test]
+    fn new_question_bank_gets_default_metrics() {
+        let path = temporary_database_path("new-bank");
+        let mut connection = initialize_database(&path).expect("initialize database");
+        let transaction = connection.transaction().unwrap();
+        save_bank_transaction(
+            &transaction,
+            &QuestionBank {
+                id: "bank-new".into(),
+                material_id: "material-new".into(),
+                title: "新規教材".into(),
+                sections: vec![],
+                rounds: vec![],
+            },
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let transaction = connection.transaction().unwrap();
+        save_bank_transaction(
+            &transaction,
+            &QuestionBank {
+                id: "bank-new".into(),
+                material_id: "material-new".into(),
+                title: "更新した教材名".into(),
+                sections: vec![],
+                rounds: vec![],
+            },
+        )
+        .unwrap();
+        transaction.commit().unwrap();
+
+        let records = custom_metrics::load_custom_metrics(&connection, "bank-new", false).unwrap();
+        assert_eq!(records.len(), 3);
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.system_key.as_deref().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["ever_correct", "ever_confident_correct", "multiple_correct"]
+        );
+        drop(connection);
+        fs::remove_file(path).expect("remove test database");
     }
 }

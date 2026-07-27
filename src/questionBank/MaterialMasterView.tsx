@@ -1,5 +1,6 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { isTauriRuntime } from "../lib/tauri";
+import { CustomMetricSettingsPanel } from "./CustomMetricSettingsPanel";
 import {
   DeleteProblemPanel,
   ModalBackdrop,
@@ -18,7 +19,13 @@ const evaluationLabels: Record<EvaluationType, string> = {
   mixed: "混在",
 };
 
-export function MaterialMasterView({ goalId }: { goalId: string }) {
+export function MaterialMasterView({
+  goalId,
+  onNotify = () => undefined,
+}: {
+  goalId: string;
+  onNotify?: (message: string) => void;
+}) {
   const [materials, setMaterials] = useState<QuestionBank[]>([]);
   const [selectedId, setSelectedId] = useState("");
   const [message, setMessage] = useState("");
@@ -29,6 +36,7 @@ export function MaterialMasterView({ goalId }: { goalId: string }) {
   const [deletingSection, setDeletingSection] = useState<QuestionSection | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [deletingMaterial, setDeletingMaterial] = useState(false);
+  const [customMetricEditorDirty, setCustomMetricEditorDirty] = useState(false);
 
   async function refresh(preferredId?: string) {
     try {
@@ -89,7 +97,17 @@ export function MaterialMasterView({ goalId }: { goalId: string }) {
       {materials.length > 0 && (
         <div className="panel material-selector-card">
           <label>編集する教材
-            <select value={selectedId} onChange={(event) => setSelectedId(event.target.value)}>
+            <select value={selectedId} onChange={(event) => {
+              const nextId = event.target.value;
+              if (
+                customMetricEditorDirty
+                && !window.confirm("カスタムメトリクスに未保存の変更があります。破棄して教材を切り替えますか？")
+              ) {
+                return;
+              }
+              setCustomMetricEditorDirty(false);
+              setSelectedId(nextId);
+            }}>
               {materials.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
             </select>
           </label>
@@ -105,6 +123,11 @@ export function MaterialMasterView({ goalId }: { goalId: string }) {
               <button className="danger-button" onClick={() => setDeletingMaterial(true)}>教材を削除</button>
             </div>
           </div>
+          <CustomMetricSettingsPanel
+            questionBankId={material.id}
+            onNotify={onNotify}
+            onEditorDirtyChange={setCustomMetricEditorDirty}
+          />
           <SectionCreateForm onCreate={(input) => run(() => service.addSection(material, input), "セクションを追加しました。", material.id)} />
           {material.sections.length === 0 && <div className="panel empty-state"><p>セクションを追加すると問題を登録できます。</p></div>}
           {material.sections.map((section) => (

@@ -10,7 +10,7 @@
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
     "preview": "vite preview",
-    "test": "node --import tsx --test scripts/*.test.ts",
+    "test": "node --import tsx --test scripts/*.test.ts scripts/*.test.tsx",
     "test:validation": "node scripts/test-study-plan-validation.mjs",
     "import:chuken3": "node --import tsx scripts/import-chuken3-trainingbook.ts"
   },

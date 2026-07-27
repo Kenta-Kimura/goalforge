@@ -1,15 +1,30 @@
-import { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { isTauriRuntime } from "../lib/tauri";
 import {
   calculateBankSummary,
   calculateMockExamSummary,
+  calculatePracticeRoundAccuracies,
   calculateRoundSummary,
   deriveScoreResult,
+  getPracticeRoundHistory,
   latestAttempt,
   matchesFilter,
 } from "./analytics";
 import { formatAttemptDate, formatAttemptDay } from "./presentation";
+import {
+  buildCustomMetricColumns,
+  customMetricTooltip,
+  customMetricCellText,
+  formatCustomMetricProgress,
+  getCustomMetricCellState,
+  getCustomMetricProgress,
+  matchesCustomMetricFilters,
+  type CustomMetricColumn,
+  type CustomMetricFilterMode,
+  type CustomMetricFilterSelections,
+} from "./customMetricColumns";
+import { subscribeToCustomMetricChanges } from "./customMetricEvents";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
 import type {
@@ -22,6 +37,7 @@ import type {
 } from "./types";
 
 const service = new QuestionBankService(new SqliteQuestionBankRepository());
+const repository = new SqliteQuestionBankRepository();
 const initialFilters: QuestionFilters = {
   statuses: [],
   results: [],
@@ -51,6 +67,12 @@ export function ExerciseView() {
   const [historyProblemId, setHistoryProblemId] = useState("");
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(isTauriRuntime());
+  const [metricColumns, setMetricColumns] = useState<CustomMetricColumn[]>([]);
+  const [metricLoading, setMetricLoading] = useState(false);
+  const [metricError, setMetricError] = useState("");
+  const [customMetricFilters, setCustomMetricFilters] =
+    useState<CustomMetricFilterSelections>({});
+  const metricRequestId = useRef(0);
 
   async function refresh(preferredBankId?: string) {
     try {
@@ -67,6 +89,52 @@ export function ExerciseView() {
   useEffect(() => {
     if (isTauriRuntime()) void refresh();
   }, []);
+
+  async function refreshMetricColumns(questionBankId: string) {
+    const requestId = metricRequestId.current + 1;
+    metricRequestId.current = requestId;
+    setMetricColumns([]);
+    setMetricLoading(true);
+    setMetricError("");
+    try {
+      const [definitions, summaries] = await Promise.all([
+        repository.listCustomMetrics(questionBankId),
+        repository.getCustomMetricSummaries(questionBankId),
+      ]);
+      if (metricRequestId.current === requestId) {
+        const nextColumns = buildCustomMetricColumns(definitions, summaries);
+        setMetricColumns(nextColumns);
+        const visibleMetricIds = new Set(nextColumns.map((column) => column.metricId));
+        setCustomMetricFilters((current) => Object.fromEntries(
+          Object.entries(current).filter(([metricId]) => visibleMetricIds.has(metricId)),
+        ));
+      }
+    } catch (error) {
+      if (metricRequestId.current === requestId) {
+        setMetricColumns([]);
+        setMetricError(toMessage(error));
+      }
+    } finally {
+      if (metricRequestId.current === requestId) setMetricLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (!isTauriRuntime() || !selectedBankId) {
+      metricRequestId.current += 1;
+      setMetricColumns([]);
+      return;
+    }
+    void refreshMetricColumns(selectedBankId);
+  }, [banks, selectedBankId]);
+
+  useEffect(() => {
+    setCustomMetricFilters({});
+  }, [selectedBankId]);
+
+  useEffect(() => subscribeToCustomMetricChanges((questionBankId) => {
+    if (questionBankId === selectedBankId) void refreshMetricColumns(questionBankId);
+  }), [selectedBankId]);
 
   const bank = banks.find((item) => item.id === selectedBankId);
   const problems = useMemo(() => bank?.sections.flatMap((section) => section.problems) ?? [], [bank]);
@@ -124,6 +192,11 @@ export function ExerciseView() {
           {bank && (
             <>
               <BankSummary bank={bank} />
+              <LearningRoundSummary bank={bank} />
+              <CustomMetricOverallSummary
+                columns={metricColumns}
+                loading={metricLoading}
+              />
               <MockExamPanel
                 bank={bank}
                 activeRoundId={activeMockRoundId}
@@ -141,6 +214,12 @@ export function ExerciseView() {
               />
               <ProblemList
                 bank={bank}
+                metricColumns={metricColumns}
+                metricLoading={metricLoading}
+                metricError={metricError}
+                customMetricFilters={customMetricFilters}
+                setCustomMetricFilters={setCustomMetricFilters}
+                onReloadMetrics={() => void refreshMetricColumns(bank.id)}
                 filters={filters}
                 setFilters={setFilters}
                 selectedProblemIds={selectedProblemIds}
@@ -153,15 +232,24 @@ export function ExerciseView() {
                 }
                 onHistory={setHistoryProblemId}
                 onAnswer={async (problemId) => {
+                  const targetProblem = problems.find((problem) => problem.id === problemId);
+                  const answeredRoundIds = new Set(
+                    targetProblem?.attempts.map((attempt) => attempt.roundId) ?? [],
+                  );
                   const activeMockRound = bank.rounds.find(
                     (item) =>
                       item.id === activeMockRoundId &&
                       !item.completedAt &&
-                      item.targetProblemIds.includes(problemId),
+                      item.targetProblemIds.includes(problemId) &&
+                      !answeredRoundIds.has(item.id),
                   );
                   let round = activeMockRound ?? [...bank.rounds]
                       .reverse()
-                      .find((item) => !item.completedAt && !isMockRound(bank, item));
+                      .find((item) => (
+                        !item.completedAt
+                        && !isMockRound(bank, item)
+                        && !answeredRoundIds.has(item.id)
+                      ));
                   if (!round) {
                     try {
                       round = await service.createRound(bank.id, "all");
@@ -195,6 +283,10 @@ export function ExerciseView() {
                   bank={bank}
                   onClose={() => setHistoryProblemId("")}
                   onChanged={refresh}
+                  onAdd={(roundId) => {
+                    setHistoryProblemId("");
+                    setAnswerRequest({ problemId: historyProblem.id, roundId });
+                  }}
                 />
               )}
             </>
@@ -221,6 +313,32 @@ function BankSummary({ bank }: { bank: QuestionBank }) {
 
 function SummaryCard({ label, value }: { label: string; value: string }) {
   return <div className="panel question-summary-card"><span>{label}</span><strong>{value}</strong></div>;
+}
+
+export function LearningRoundSummary({ bank }: { bank: QuestionBank }) {
+  const rounds = calculatePracticeRoundAccuracies(bank);
+  return (
+    <section className="panel learning-round-summary">
+      <div>
+        <span className="eyebrow">教材全体</span>
+        <h2>学習サマリー</h2>
+      </div>
+      {rounds.length === 0 ? (
+        <p className="helper-text">解答履歴はまだありません。</p>
+      ) : (
+        <div className="learning-round-summary-grid">
+          {rounds.map((round) => (
+            <div className="learning-round-summary-card" key={round.roundNumber}>
+              <small>{round.roundNumber}周目</small>
+              <strong>
+                {round.correctCount} / {round.problemCount} ({(round.accuracyRate * 100).toFixed(1)}%)
+              </strong>
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function MockExamPanel({
@@ -287,9 +405,17 @@ function isMockRound(bank: QuestionBank, round: QuestionBank["rounds"][number]) 
 }
 
 function ProblemList({
-  bank, filters, setFilters, selectedProblemIds, setSelectedProblemIds, onStatus, onHistory, onAnswer,
+  bank, metricColumns, metricLoading, metricError, onReloadMetrics,
+  customMetricFilters, setCustomMetricFilters,
+  filters, setFilters, selectedProblemIds, setSelectedProblemIds, onStatus, onHistory, onAnswer,
 }: {
   bank: QuestionBank;
+  metricColumns: CustomMetricColumn[];
+  metricLoading: boolean;
+  metricError: string;
+  customMetricFilters: CustomMetricFilterSelections;
+  setCustomMetricFilters: (filters: CustomMetricFilterSelections) => void;
+  onReloadMetrics: () => void;
   filters: QuestionFilters;
   setFilters: (filters: QuestionFilters) => void;
   selectedProblemIds: string[];
@@ -338,6 +464,11 @@ function ProblemList({
             onChange: () => toggleFilter("statuses", value),
           }))}
         />
+        <CustomMetricFilterControls
+          columns={metricColumns}
+          selections={customMetricFilters}
+          onChange={setCustomMetricFilters}
+        />
         <FilterChecks
           label="最新の解答"
           allSelected={filters.results.length === 0}
@@ -376,7 +507,10 @@ function ProblemList({
         <label>最新日（終了）
           <input type="date" value={filters.latestTo} onChange={(event) => updateFilter("latestTo", event.target.value)} />
         </label>
-        <button type="button" onClick={() => setFilters(initialFilters)}>条件をクリア</button>
+        <button type="button" onClick={() => {
+          setFilters(initialFilters);
+          setCustomMetricFilters({});
+        }}>条件をクリア</button>
         <span>{selectedProblemIds.length}問選択</span>
         {(["active", "completed", "paused", "excluded"] as const).map((status) => (
           <button key={status} disabled={!selectedProblemIds.length} onClick={() => onStatus(selectedProblemIds, status)}>
@@ -384,8 +518,27 @@ function ProblemList({
           </button>
         ))}
       </div>
+      {metricLoading && (
+        <div className="metric-column-loading" aria-label="カスタムメトリクスを読み込んでいます">
+          <span /><span /><span />
+        </div>
+      )}
+      {!metricLoading && metricError && (
+        <div className="custom-metric-error metric-column-error" role="alert">
+          <p>カスタムメトリクスを取得できませんでした: {metricError}</p>
+          <button type="button" onClick={onReloadMetrics}>再読み込み</button>
+        </div>
+      )}
       {bank.sections.map((section) => {
-        const visible = section.problems.filter((problem) => matchesFilter(problem, filters));
+        const visible = section.problems.filter((problem) => (
+          matchesFilter(problem, filters)
+          && (
+            metricLoading
+            || Boolean(metricError)
+            || matchesCustomMetricFilters(problem.id, metricColumns, customMetricFilters)
+          )
+        ));
+        const sectionProblemIds = section.problems.map((problem) => problem.id);
         return (
           <details className="panel question-section" key={section.id} open>
             <summary>
@@ -396,7 +549,22 @@ function ProblemList({
             </summary>
             <div className="problem-table-wrap">
               <table className="problem-table">
-                <thead><tr><th>選択</th><th>問題</th><th>解答履歴 <small className="confidence-legend">確信度 ●●● / ●● / ●</small></th><th>最新日</th><th>状態</th><th>操作</th></tr></thead>
+                <thead><tr>
+                  <th>選択</th>
+                  <th>問題</th>
+                  <th>解答履歴 <small className="confidence-legend">確信度 ●●● / ●● / ●</small></th>
+                  <th>最新日</th>
+                  <th>状態</th>
+                  {metricColumns.map((column) => (
+                    <CustomMetricHeader
+                      key={column.metricId}
+                      column={column}
+                      problemIds={sectionProblemIds}
+                      scopeLabel={section.title}
+                    />
+                  ))}
+                  <th>操作</th>
+                </tr></thead>
                 <tbody>
                   {visible.map((problem) => {
                     const attempt = latestAttempt(problem);
@@ -405,20 +573,7 @@ function ProblemList({
                         <td><input type="checkbox" aria-label={`No.${problem.number}を選択`} checked={selectedProblemIds.includes(problem.id)} onChange={(event) => setSelectedProblemIds(event.target.checked ? [...selectedProblemIds, problem.id] : selectedProblemIds.filter((id) => id !== problem.id))} /></td>
                         <td><strong>No.{problem.number}</strong>{problem.title && <small>{problem.title}</small>}</td>
                         <td>
-                          <div className="score-mark-history" aria-label={`${problem.attempts.length}回分の解答履歴`}>
-                            {problem.attempts.length
-                              ? [...problem.attempts]
-                                  .sort((left, right) => left.attemptNumber - right.attemptNumber)
-                                  .map((historyAttempt) => {
-                                    return (
-                                    <HistoryScoreMark
-                                      key={historyAttempt.id}
-                                      attempt={historyAttempt}
-                                    />
-                                    );
-                                  })
-                              : <ScoreMark />}
-                          </div>
+                          <PracticeRoundHistoryMarks bank={bank} problem={problem} />
                         </td>
                         <td>{attempt ? formatAttemptDay(attempt.answeredAt) : "—"}</td>
                         <td>
@@ -426,6 +581,13 @@ function ProblemList({
                             {Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                           </select>
                         </td>
+                        {metricColumns.map((column) => (
+                          <CustomMetricCell
+                            key={column.metricId}
+                            column={column}
+                            problemId={problem.id}
+                          />
+                        ))}
                         <td>
                           <button
                             type="button"
@@ -447,6 +609,84 @@ function ProblemList({
         );
       })}
     </div>
+  );
+}
+
+export function CustomMetricHeader({
+  column,
+  problemIds,
+  scopeLabel,
+}: {
+  column: CustomMetricColumn;
+  problemIds?: Iterable<string>;
+  scopeLabel?: string;
+}) {
+  const scopedProblemIds = problemIds ? [...problemIds] : undefined;
+  const progress = getCustomMetricProgress(column, scopedProblemIds);
+  return (
+    <th
+      className="custom-metric-column-header"
+      title={customMetricTooltip(column, scopedProblemIds, scopeLabel)}
+    >
+      {column.icon && <span aria-hidden="true">{column.icon}</span>}
+      <small>{column.name}</small>
+      <strong>{formatCustomMetricProgress(progress)}</strong>
+    </th>
+  );
+}
+
+export function CustomMetricOverallSummary({
+  columns,
+  loading,
+}: {
+  columns: CustomMetricColumn[];
+  loading: boolean;
+}) {
+  if (loading || columns.length === 0) return null;
+  return (
+    <section className="panel custom-metric-overall-summary">
+      <div>
+        <span className="eyebrow">教材全体</span>
+        <h2>カスタムメトリクス</h2>
+      </div>
+      <div className="custom-metric-overall-grid">
+        {columns.map((column) => {
+          const progress = getCustomMetricProgress(column);
+          return (
+            <div
+              className="custom-metric-overall-card"
+              key={column.metricId}
+              title={customMetricTooltip(column, undefined, "教材全体")}
+            >
+              <span aria-hidden="true">{column.icon}</span>
+              <small>{column.name}</small>
+              <strong>{formatCustomMetricProgress(progress)}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
+export function CustomMetricCell({
+  column,
+  problemId,
+}: {
+  column: CustomMetricColumn;
+  problemId: string;
+}) {
+  const state = getCustomMetricCellState(column, problemId);
+  const labels = {
+    outside_population: `${column.name}: 集計対象外`,
+    matched: `${column.name}: 達成`,
+    unmatched: `${column.name}: 未達成`,
+  };
+  return (
+    <td
+      className={`custom-metric-cell ${state}`}
+      aria-label={labels[state]}
+    >{customMetricCellText(state)}</td>
   );
 }
 
@@ -475,7 +715,61 @@ function FilterChecks({
   );
 }
 
-function AnswerPanel({
+export function CustomMetricFilterControls({
+  columns,
+  selections,
+  onChange,
+}: {
+  columns: CustomMetricColumn[];
+  selections: CustomMetricFilterSelections;
+  onChange: (selections: CustomMetricFilterSelections) => void;
+}) {
+  if (columns.length === 0) return null;
+  const labels: Record<CustomMetricFilterMode, string> = {
+    matched: "達成",
+    unmatched: "未達",
+  };
+  return (
+    <fieldset className="filter-checks custom-metric-filter-controls">
+      <legend>カスタムメトリクス</legend>
+      {columns.map((column) => {
+        const mode = selections[column.metricId];
+        return (
+          <div key={column.metricId}>
+            <label>
+              <span aria-hidden="true">{column.icon}</span>
+              {column.name}
+            </label>
+            <select
+              aria-label={`${column.name}の絞り込み状態`}
+              value={mode ?? ""}
+              onChange={(event) => {
+                if (event.target.value === "") {
+                  const next = { ...selections };
+                  delete next[column.metricId];
+                  onChange(next);
+                } else {
+                  onChange({
+                    ...selections,
+                    [column.metricId]: event.target.value as CustomMetricFilterMode,
+                  });
+                }
+              }}
+            >
+              <option value="">未指定</option>
+              {(Object.entries(labels) as Array<[CustomMetricFilterMode, string]>)
+                .map(([value, label]) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+            </select>
+          </div>
+        );
+      })}
+    </fieldset>
+  );
+}
+
+export function AnswerPanel({
   bank,
   problem,
   roundId,
@@ -494,6 +788,7 @@ function AnswerPanel({
   const [maxScore, setMaxScore] = useState(problem.defaultMaxScore);
   const [confidence, setConfidence] = useState<Confidence>(null);
   const [note, setNote] = useState("");
+  const [selectedRoundId, setSelectedRoundId] = useState(roundId);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
   useEffect(() => {
@@ -501,7 +796,8 @@ function AnswerPanel({
     setMaxScore(problem.defaultMaxScore);
     setConfidence(null);
     setNote("");
-  }, [problem.id, problem.defaultMaxScore]);
+    setSelectedRoundId(roundId);
+  }, [problem.id, problem.defaultMaxScore, roundId]);
   async function submit(event?: FormEvent) {
     event?.preventDefault();
     if (saving) return;
@@ -510,7 +806,7 @@ function AnswerPanel({
       setSaving(true);
       await service.recordAttempt({
         problemId: problem.id,
-        roundId,
+        roundId: selectedRoundId,
         earnedScore,
         maxScore,
         confidence,
@@ -528,7 +824,24 @@ function AnswerPanel({
       <button className="dialog-close" type="button" onClick={onClose}>閉じる</button>
       <span className="eyebrow">{bank.title}・{section.title}</span>
       <h2>No.{problem.number} 解答履歴を登録</h2>
-      <p>過去の解答: {problem.attempts.length ? problem.attempts.map((attempt) => `${scoreMark(deriveScoreResult(attempt.earnedScore, attempt.maxScore))} ${attempt.earnedScore}/${attempt.maxScore}`).join(" / ") : "未解答"}</p>
+      <PracticeRoundHistoryMarks bank={bank} problem={problem} />
+      <label>周回
+        <select
+          value={selectedRoundId}
+          onChange={(event) => setSelectedRoundId(event.target.value)}
+          required
+        >
+          {[...bank.rounds]
+            .sort((left, right) => left.roundNumber - right.roundNumber)
+            .filter((round) => (
+              round.id === selectedRoundId
+              || !problem.attempts.some((attempt) => attempt.roundId === round.id)
+            ))
+            .map((round) => (
+              <option key={round.id} value={round.id}>{round.roundNumber}周目</option>
+            ))}
+        </select>
+      </label>
       {binary && (
         <div className="binary-buttons">
           <button type="button" className={earnedScore === 1 && maxScore === 1 ? "selected" : ""} onClick={() => { setEarnedScore(1); setMaxScore(1); }}>○ 正解 1/1</button>
@@ -673,9 +986,22 @@ export function DeleteProblemPanel({
   );
 }
 
-function HistoryPanel({ problem, bank, onClose, onChanged }: { problem: Problem; bank: QuestionBank; onClose: () => void; onChanged: () => Promise<void> }) {
+export function HistoryPanel({
+  problem,
+  bank,
+  onClose,
+  onChanged,
+  onAdd,
+}: {
+  problem: Problem;
+  bank: QuestionBank;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+  onAdd: (roundId: string) => void;
+}) {
   const [editing, setEditing] = useState<ProblemAttempt | null>(null);
   const [deletingAttemptId, setDeletingAttemptId] = useState("");
+  const roundHistory = getPracticeRoundHistory(bank, problem);
   async function remove(id: string) {
     await service.deleteAttempt(id);
     setDeletingAttemptId("");
@@ -687,11 +1013,23 @@ function HistoryPanel({ problem, bank, onClose, onChanged }: { problem: Problem;
         <button className="dialog-close" onClick={onClose}>閉じる</button>
         <h2>問題 No.{problem.number}</h2>
         <p>配点: {problem.defaultMaxScore}点・現在の状態: {statusLabels[problem.reviewStatus]}</p>
-        {problem.attempts.length === 0 && <p>解答履歴はありません。</p>}
-        {problem.attempts.map((attempt) => {
+        {roundHistory.length === 0 && <p>周回履歴はありません。</p>}
+        {roundHistory.map((entry) => {
+          const attempt = entry.attempt;
+          if (!attempt) {
+            return (
+              <div className="history-entry history-entry-missing" key={entry.roundId}>
+                <strong>{entry.roundNumber}周目</strong>
+                <span>-</span>
+                <div className="history-entry-actions">
+                  <button onClick={() => onAdd(entry.roundId)}>解答を追加</button>
+                </div>
+              </div>
+            );
+          }
           return (
-            <div className="history-entry" key={attempt.id}>
-              <strong>{attempt.attemptNumber}回目</strong>
+            <div className="history-entry" key={entry.roundId}>
+              <strong>{entry.roundNumber}周目</strong>
               <dl>
                 <div><dt>日時</dt><dd>{formatAttemptDate(attempt.answeredAt)}</dd></div>
                 <div><dt>得点</dt><dd>{scoreMark(deriveScoreResult(attempt.earnedScore, attempt.maxScore))} {attempt.earnedScore} / {attempt.maxScore}</dd></div>
@@ -753,7 +1091,46 @@ function ScoreMark({ result }: { result?: ReturnType<typeof deriveScoreResult> }
   return <span className={`score-mark ${result ?? "none"}`}>{result ? scoreMark(result) : "—"}</span>;
 }
 
-function HistoryScoreMark({ attempt }: { attempt: ProblemAttempt }) {
+export function PracticeRoundHistoryMarks({
+  bank,
+  problem,
+}: {
+  bank: QuestionBank;
+  problem: Problem;
+}) {
+  const roundHistory = getPracticeRoundHistory(bank, problem);
+  return (
+    <div className="score-mark-history" aria-label={`${roundHistory.length}周分の解答履歴`}>
+      {roundHistory.length
+        ? roundHistory.map((entry) => (
+            entry.attempt ? (
+              <HistoryScoreMark
+                key={entry.roundId}
+                attempt={entry.attempt}
+                roundNumber={entry.roundNumber}
+              />
+            ) : (
+              <span
+                className="history-score history-score-missing"
+                key={entry.roundId}
+                aria-label={`${entry.roundNumber}周目、解答履歴なし`}
+              >
+                <span className="score-mark none">-</span>
+              </span>
+            )
+          ))
+        : <ScoreMark />}
+    </div>
+  );
+}
+
+function HistoryScoreMark({
+  attempt,
+  roundNumber,
+}: {
+  attempt: ProblemAttempt;
+  roundNumber: number;
+}) {
   const result = deriveScoreResult(attempt.earnedScore, attempt.maxScore);
   const confidence = attempt.confidence ? confidenceLabels[attempt.confidence] : "未設定";
   const [tooltipPosition, setTooltipPosition] = useState<{ left: number; top: number; below: boolean } | null>(null);
@@ -773,7 +1150,7 @@ function HistoryScoreMark({ attempt }: { attempt: ProblemAttempt }) {
     <span
       className={`history-score result-${result} confidence-${attempt.confidence ?? "unset"}`}
       tabIndex={0}
-      aria-label={`${attempt.attemptNumber}回目、${scoreMark(result)}、確信度${confidence}`}
+      aria-label={`${roundNumber}周目、${scoreMark(result)}、確信度${confidence}`}
       aria-describedby={tooltipPosition ? tooltipId : undefined}
       onMouseEnter={(event) => showTooltip(event.currentTarget)}
       onMouseLeave={() => setTooltipPosition(null)}
@@ -789,7 +1166,7 @@ function HistoryScoreMark({ attempt }: { attempt: ProblemAttempt }) {
           role="tooltip"
           style={{ left: tooltipPosition.left, top: tooltipPosition.top }}
         >
-          <strong>{attempt.attemptNumber}回目</strong>
+          <strong>{roundNumber}周目</strong>
           <span>日時: {formatAttemptDate(attempt.answeredAt)}</span>
           <span>得点: {attempt.earnedScore} / {attempt.maxScore}</span>
           <span>確信度: {confidence}</span>

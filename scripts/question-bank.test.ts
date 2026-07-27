@@ -3,8 +3,10 @@ import test from "node:test";
 import {
   calculateBankSummary,
   calculateMockExamSummary,
+  calculatePracticeRoundAccuracies,
   calculateRoundSummary,
   deriveScoreResult,
+  getPracticeRoundHistory,
   latestAttempt,
   matchesFilter,
 } from "../src/questionBank/analytics";
@@ -124,6 +126,123 @@ test("模擬試験大問の得点を履歴から集計する", () => {
   assert.equal(summary.maxScore, 15);
 });
 
+test("1周のみの正解率を集計する", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [attempt("a1", "p1", 1, 1, null, 1)]),
+    problem("p2", "active", [attempt("a2", "p2", 0, 1, null, 1)]),
+  ]), [1]);
+  assert.deepEqual(calculatePracticeRoundAccuracies(bank), [{
+    roundNumber: 1,
+    correctCount: 1,
+    problemCount: 2,
+    accuracyRate: 0.5,
+  }]);
+});
+
+test("2周・3周を既存のPracticeRoundごとに分けて集計する", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [
+      attempt("p1-a1", "p1", 1, 1, null, 1, undefined, "round-1"),
+      attempt("p1-a2", "p1", 0, 1, null, 2, undefined, "round-2"),
+      attempt("p1-a3", "p1", 1, 1, null, 3, undefined, "round-3"),
+    ]),
+    problem("p2", "active", [
+      attempt("p2-a1", "p2", 0, 1, null, 1, undefined, "round-1"),
+      attempt("p2-a2", "p2", 1, 1, null, 2, undefined, "round-2"),
+      attempt("p2-a3", "p2", 1, 1, null, 3, undefined, "round-3"),
+    ]),
+  ]), [1, 2, 3]);
+  assert.deepEqual(
+    calculatePracticeRoundAccuracies(bank).map(({ roundNumber, correctCount, problemCount }) => (
+      { roundNumber, correctCount, problemCount }
+    )),
+    [
+      { roundNumber: 1, correctCount: 1, problemCount: 2 },
+      { roundNumber: 2, correctCount: 1, problemCount: 2 },
+      { roundNumber: 3, correctCount: 2, problemCount: 2 },
+    ],
+  );
+});
+
+test("途中終了した周は実際に解答した問題だけを分母にする", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [
+      attempt("p1-a1", "p1", 1, 1, null, 1, undefined, "round-1"),
+      attempt("p1-a2", "p1", 1, 1, null, 2, undefined, "round-2"),
+    ]),
+    problem("p2", "active", [
+      attempt("p2-a1", "p2", 1, 1, null, 1, undefined, "round-1"),
+      attempt("p2-a2", "p2", 0, 1, null, 2, undefined, "round-2"),
+    ]),
+    problem("p3", "active", [attempt("p3-a1", "p3", 1, 1, null, 1)]),
+  ]), [1, 2]);
+  const second = calculatePracticeRoundAccuracies(bank)[1];
+  assert.deepEqual(
+    { correctCount: second.correctCount, problemCount: second.problemCount, accuracyRate: second.accuracyRate },
+    { correctCount: 1, problemCount: 2, accuracyRate: 0.5 },
+  );
+});
+
+test("未回答問題は周回の分母へ含めない", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [attempt("a1", "p1", 1, 1, null, 1)]),
+    problem("p2", "active", []),
+  ]), [1]);
+  assert.equal(calculatePracticeRoundAccuracies(bank)[0].problemCount, 1);
+});
+
+test("周回正解率は100%と0%を表現できる", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [
+      attempt("p1-a1", "p1", 1, 1, null, 1, undefined, "round-1"),
+      attempt("p1-a2", "p1", 0, 1, null, 2, undefined, "round-2"),
+    ]),
+    problem("p2", "active", [
+      attempt("p2-a1", "p2", 1, 1, null, 1, undefined, "round-1"),
+      attempt("p2-a2", "p2", 0, 1, null, 2, undefined, "round-2"),
+    ]),
+  ]), [1, 2]);
+  const rounds = calculatePracticeRoundAccuracies(bank);
+  assert.equal(rounds[0].accuracyRate, 1);
+  assert.equal(rounds[1].accuracyRate, 0);
+});
+
+test("Numbersの周回番号を使い、空欄を詰めた解答番号から周回を推測しない", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [
+      attempt("a1", "p1", 1, 1, null, 1, undefined, "round-2"),
+    ]),
+  ]), [2]);
+  assert.deepEqual(calculatePracticeRoundAccuracies(bank), [{
+    roundNumber: 2,
+    correctCount: 1,
+    problemCount: 1,
+    accuracyRate: 1,
+  }]);
+});
+
+test("解答履歴はNumbersの周回順に並べ、履歴がない周回を空欄として維持する", () => {
+  const bank = withRounds(makeBank([
+    problem("p1", "active", [
+      attempt("a1", "p1", 1, 1, null, 1, undefined, "round-2"),
+      attempt("a2", "p1", 0, 1, null, 2, undefined, "round-4"),
+    ]),
+  ]), [1, 2, 3, 4]);
+  assert.deepEqual(
+    getPracticeRoundHistory(bank, bank.sections[0].problems[0])
+      .map((entry) => ({
+        roundNumber: entry.roundNumber,
+        attemptId: entry.attempt?.id ?? null,
+      })),
+    [
+      { roundNumber: 1, attemptId: null },
+      { roundNumber: 2, attemptId: "a1" },
+      { roundNumber: 3, attemptId: null },
+      { roundNumber: 4, attemptId: "a2" },
+    ],
+  );
+});
+
 function filters(overrides: Partial<QuestionFilters> = {}): QuestionFilters {
   return {
     statuses: [],
@@ -143,8 +262,9 @@ function attempt(
   confidence: ProblemAttempt["confidence"],
   attemptNumber = Number(id.slice(-1)),
   answeredAt: string | null = `2026-07-${id.slice(-1).padStart(2, "0")}T00:00:00.000Z`,
+  roundId = "round-1",
 ): ProblemAttempt {
-  return { id, problemId, roundId: "round-1", answeredAt, attemptNumber, earnedScore, maxScore, confidence };
+  return { id, problemId, roundId, answeredAt, attemptNumber, earnedScore, maxScore, confidence };
 }
 
 function problem(
@@ -177,5 +297,18 @@ function makeBank(problems: Problem[], isMockExamSection = false): QuestionBank 
       startedAt: "2026-07-01T00:00:00.000Z",
       targetProblemIds: problems.map((item) => item.id),
     }],
+  };
+}
+
+function withRounds(bank: QuestionBank, roundNumbers: number[]): QuestionBank {
+  return {
+    ...bank,
+    rounds: roundNumbers.map((roundNumber) => ({
+      id: `round-${roundNumber}`,
+      questionBankId: bank.id,
+      roundNumber,
+      startedAt: "2026-07-01T00:00:00.000Z",
+      targetProblemIds: bank.sections.flatMap((section) => section.problems.map((problem) => problem.id)),
+    })),
   };
 }
