@@ -1,6 +1,5 @@
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { isTauriRuntime } from "../lib/tauri";
-import type { Goal, StudyPlan } from "../types";
 import { CustomMetricSettingsPanel } from "./CustomMetricSettingsPanel";
 import {
   DeleteProblemPanel,
@@ -10,7 +9,6 @@ import {
 } from "./QuestionBankView";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
-import { buildLearningHistoryExport } from "./learningHistoryExport";
 import type { EvaluationType, Problem, QuestionBank, QuestionSection } from "./types";
 
 const service = new QuestionBankService(new SqliteQuestionBankRepository());
@@ -23,13 +21,9 @@ const evaluationLabels: Record<EvaluationType, string> = {
 
 export function MaterialMasterView({
   goalId,
-  goal,
-  studyPlan,
   onNotify = () => undefined,
 }: {
   goalId: string;
-  goal: Goal;
-  studyPlan?: StudyPlan;
   onNotify?: (message: string) => void;
 }) {
   const [materials, setMaterials] = useState<QuestionBank[]>([]);
@@ -74,16 +68,6 @@ export function MaterialMasterView({
       setMessage(success);
     } catch (error) {
       setMessage(toMessage(error));
-    }
-  }
-
-  async function exportLearningHistory(material: QuestionBank) {
-    try {
-      const json = JSON.stringify(buildLearningHistoryExport(material, goal, studyPlan), null, 2);
-      await navigator.clipboard.writeText(json);
-      setMessage("ChatGPT分析用の学習履歴JSONをクリップボードへコピーしました。");
-    } catch (error) {
-      setMessage(`学習履歴をエクスポートできませんでした: ${toMessage(error)}`);
     }
   }
 
@@ -135,7 +119,6 @@ export function MaterialMasterView({
           <div className="panel material-master-heading">
             <div><span className="eyebrow">教材</span><h2>{material.title}</h2><p>{material.sections.length}セクション・{problemCount}問</p></div>
             <div className="master-actions">
-              <button onClick={() => void exportLearningHistory(material)}>学習履歴をエクスポート</button>
               <button onClick={() => setRenaming(true)}>教材名を編集</button>
               <button className="danger-button" onClick={() => setDeletingMaterial(true)}>教材を削除</button>
             </div>

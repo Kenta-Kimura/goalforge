@@ -89,6 +89,28 @@ export function buildLearningHistoryExport(
   };
 }
 
+export function downloadLearningHistoryJson(
+  bank: QuestionBank,
+  goal: Goal,
+  plan: StudyPlan | undefined,
+) {
+  const json = JSON.stringify(buildLearningHistoryExport(bank, goal, plan), null, 2);
+  const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = learningHistoryFileName(bank.title);
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+export function learningHistoryFileName(title: string) {
+  const safeTitle = title.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_") || "material";
+  return `${safeTitle}-learning-history.json`;
+}
+
 function findStudyResource(bank: QuestionBank, plan: StudyPlan | undefined): StudyResource | undefined {
   return plan?.resources.find((resource) => resource.name === bank.title);
 }

@@ -1,6 +1,7 @@
 import React, { FormEvent, MouseEvent, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { isTauriRuntime } from "../lib/tauri";
+import type { Goal, StudyPlan } from "../types";
 import {
   calculateBankSummary,
   calculateMockExamSummary,
@@ -25,6 +26,7 @@ import {
   type CustomMetricFilterSelections,
 } from "./customMetricColumns";
 import { subscribeToCustomMetricChanges } from "./customMetricEvents";
+import { downloadLearningHistoryJson } from "./learningHistoryExport";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
 import type {
@@ -57,7 +59,7 @@ const confidenceLabels: Record<string, string> = {
   low: "低",
 };
 
-export function ExerciseView() {
+export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: StudyPlan }) {
   const [banks, setBanks] = useState<QuestionBank[]>([]);
   const [selectedBankId, setSelectedBankId] = useState("");
   const [filters, setFilters] = useState<QuestionFilters>(initialFilters);
@@ -188,6 +190,15 @@ export function ExerciseView() {
                 {banks.map((item) => <option key={item.id} value={item.id}>{item.title}</option>)}
               </select>
             </label>
+            <button type="button" disabled={!bank} onClick={() => {
+              if (!bank) return;
+              try {
+                downloadLearningHistoryJson(bank, goal, studyPlan);
+                setMessage("ChatGPT分析用の学習履歴JSONをファイルへ出力しました。");
+              } catch (error) {
+                setMessage(`学習履歴をエクスポートできませんでした: ${toMessage(error)}`);
+              }
+            }}>学習履歴をエクスポート</button>
           </div>
           {bank && (
             <>

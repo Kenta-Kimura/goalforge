@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLearningHistoryExport } from "../src/questionBank/learningHistoryExport";
+import { buildLearningHistoryExport, learningHistoryFileName } from "../src/questionBank/learningHistoryExport";
 import type { Goal, StudyPlan } from "../src/types";
 import type { QuestionBank } from "../src/questionBank/types";
 
@@ -65,4 +65,9 @@ test("uses null for unavailable plan values and zero denominators", () => {
   assert.equal(result.resource.type, null);
   assert.equal(result.summary.accuracy, null);
   assert.equal(result.summary.averageScoreRate, null);
+});
+
+test("creates a safe JSON filename from the material title", () => {
+  assert.equal(learningHistoryFileName("教材/A:筆記"), "教材_A_筆記-learning-history.json");
+  assert.equal(learningHistoryFileName("   "), "material-learning-history.json");
 });
