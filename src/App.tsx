@@ -532,7 +532,7 @@ function App() {
         )}
 
         {activeView === "resources" && (
-          <MaterialMasterView goalId={goal.id} onNotify={showToast} />
+          <MaterialMasterView goalId={goal.id} goal={goal} studyPlan={currentPlan} onNotify={showToast} />
         )}
 
         {activeView === "questionBanks" && <ExerciseView />}
