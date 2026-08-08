@@ -842,14 +842,31 @@
   margin: 0;
 }
 
-.attempt-edit {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 16px;
-  padding: 14px;
-  border-radius: 12px;
+.history-entry-editing {
   background: var(--soft);
+}
+
+.history-entry-editing input,
+.history-entry-editing select,
+.history-entry-editing textarea {
+  width: 100%;
+  min-width: 0;
+}
+
+.history-entry-editing .attempt-score-fields dd {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 6px;
+  align-items: center;
+}
+
+.history-entry-editing .attempt-note-field {
+  grid-column: 1 / -1;
+}
+
+.history-entry-editing .form-error {
+  grid-column: 2;
+  margin: 0;
 }
 
 .form-error {

@@ -4,6 +4,7 @@ import test from "node:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
   AnswerPanel,
+  AttemptEditForm,
   HistoryPanel,
   LearningRoundSummary,
   PracticeRoundHistoryMarks,
@@ -85,6 +86,36 @@ test("履歴ダイアログでは-の周回から解答を追加できる", () =
   assert.match(html, /解答を追加/);
   assert.match(html, /2周目/);
   assert.match(html, />編集</);
+});
+
+test("履歴編集フォームは履歴詳細と同じ項目配置で既存値を表示する", () => {
+  const targetAttempt: ProblemAttempt = {
+    ...attempt("attempt-edit", 2, 0.5),
+    answeredAt: "2026-08-08T01:30:00.000Z",
+    maxScore: 1,
+    confidence: "medium",
+    note: "補語を復習",
+  };
+  const html = renderToStaticMarkup(
+    <AttemptEditForm
+      attempt={targetAttempt}
+      roundNumber={2}
+      onCancel={() => undefined}
+      onSaved={async () => undefined}
+    />,
+  );
+
+  assert.match(html, /class="history-entry history-entry-editing"/);
+  assert.match(html, /2周目/);
+  assert.match(html, />日時</);
+  assert.match(html, />得点</);
+  assert.match(html, /50\.0%/);
+  assert.match(html, />確信度</);
+  assert.match(html, />メモ</);
+  assert.match(html, /value="medium" selected=""/);
+  assert.match(html, /<textarea[^>]*rows="3"[^>]*>補語を復習<\/textarea>/);
+  assert.match(html, />キャンセル</);
+  assert.match(html, />保存</);
 });
 
 test("解答追加フォームで未入力の周回を選択できる", () => {

@@ -1047,6 +1047,17 @@ export function HistoryPanel({
               </div>
             );
           }
+          if (editing?.id === attempt.id) {
+            return (
+              <AttemptEditForm
+                key={entry.roundId}
+                attempt={attempt}
+                roundNumber={entry.roundNumber}
+                onCancel={() => setEditing(null)}
+                onSaved={async () => { setEditing(null); await onChanged(); }}
+              />
+            );
+          }
           return (
             <div className="history-entry" key={entry.roundId}>
               <strong>{entry.roundNumber}周目</strong>
@@ -1072,37 +1083,65 @@ export function HistoryPanel({
             </div>
           );
         })}
-        {editing && <AttemptEditForm attempt={editing} onCancel={() => setEditing(null)} onSaved={async () => { setEditing(null); await onChanged(); }} />}
       </section>
     </div>
   );
 }
 
-function AttemptEditForm({ attempt, onCancel, onSaved }: { attempt: ProblemAttempt; onCancel: () => void; onSaved: () => Promise<void> }) {
+export function AttemptEditForm({
+  attempt,
+  roundNumber,
+  onCancel,
+  onSaved,
+}: {
+  attempt: ProblemAttempt;
+  roundNumber: number;
+  onCancel: () => void;
+  onSaved: () => Promise<void>;
+}) {
   const [answeredAt, setAnsweredAt] = useState(toDateTimeLocalValue(attempt.answeredAt));
   const [earned, setEarned] = useState(attempt.earnedScore);
   const [max, setMax] = useState(attempt.maxScore);
   const [confidence, setConfidence] = useState<Confidence>(attempt.confidence);
   const [note, setNote] = useState(attempt.note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const scoreRate = Number.isFinite(earned) && Number.isFinite(max) && max > 0
+    ? `${((earned / max) * 100).toFixed(1)}%`
+    : "—";
   return (
-    <form className="attempt-edit" onSubmit={async (event) => {
+    <form className="history-entry history-entry-editing" onSubmit={async (event) => {
       event.preventDefault();
-      await service.updateAttempt(attempt.id, {
-        ...attempt,
-        answeredAt: new Date(answeredAt).toISOString(),
-        earnedScore: earned,
-        maxScore: max,
-        confidence,
-        note,
-      });
-      await onSaved();
+      setSaving(true);
+      setError("");
+      try {
+        await service.updateAttempt(attempt.id, {
+          ...attempt,
+          answeredAt: new Date(answeredAt).toISOString(),
+          earnedScore: earned,
+          maxScore: max,
+          confidence,
+          note,
+        });
+        await onSaved();
+      } catch (cause) {
+        setError(toMessage(cause));
+        setSaving(false);
+      }
     }}>
-      <label>日時<input type="datetime-local" required value={answeredAt} onChange={(event) => setAnsweredAt(event.target.value)} /></label>
-      <label>獲得点<input type="number" min="0" step="0.001" value={earned} onChange={(event) => setEarned(event.target.valueAsNumber)} /></label>
-      <label>満点<input type="number" min="1" step="0.001" value={max} onChange={(event) => setMax(event.target.valueAsNumber)} /></label>
-      <select value={confidence ?? ""} onChange={(event) => setConfidence((event.target.value || null) as Confidence)}><option value="">未設定</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select>
-      <input value={note} onChange={(event) => setNote(event.target.value)} placeholder="メモ" />
-      <button>更新</button><button type="button" onClick={onCancel}>キャンセル</button>
+      <strong>{roundNumber}周目</strong>
+      <dl>
+        <div><dt><label htmlFor={`attempt-${attempt.id}-answered-at`}>日時</label></dt><dd><input id={`attempt-${attempt.id}-answered-at`} type="datetime-local" required value={answeredAt} onChange={(event) => setAnsweredAt(event.target.value)} /></dd></div>
+        <div className="attempt-score-fields"><dt>得点</dt><dd><input aria-label="獲得点" type="number" min="0" step="0.001" value={earned} onChange={(event) => setEarned(event.target.valueAsNumber)} /> <span>/</span> <input aria-label="満点" type="number" min="1" step="0.001" value={max} onChange={(event) => setMax(event.target.valueAsNumber)} /></dd></div>
+        <div><dt>得点率</dt><dd>{scoreRate}</dd></div>
+        <div><dt><label htmlFor={`attempt-${attempt.id}-confidence`}>確信度</label></dt><dd><select id={`attempt-${attempt.id}-confidence`} value={confidence ?? ""} onChange={(event) => setConfidence((event.target.value || null) as Confidence)}><option value="">未設定</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></dd></div>
+        <div className="attempt-note-field"><dt><label htmlFor={`attempt-${attempt.id}-note`}>メモ</label></dt><dd><textarea id={`attempt-${attempt.id}-note`} value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></dd></div>
+      </dl>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="history-entry-actions">
+        <button type="button" onClick={onCancel} disabled={saving}>キャンセル</button>
+        <button className="primary-button" disabled={saving}>{saving ? "保存中…" : "保存"}</button>
+      </div>
     </form>
   );
 }
