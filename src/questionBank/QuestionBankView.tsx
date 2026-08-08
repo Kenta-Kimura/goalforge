@@ -26,7 +26,7 @@ import {
   type CustomMetricFilterSelections,
 } from "./customMetricColumns";
 import { subscribeToCustomMetricChanges } from "./customMetricEvents";
-import { downloadLearningHistoryJson } from "./learningHistoryExport";
+import { downloadLearningHistoryCsv, downloadLearningHistoryJson } from "./learningHistoryExport";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
 import type {
@@ -198,7 +198,16 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
               } catch (error) {
                 setMessage(`学習履歴をエクスポートできませんでした: ${toMessage(error)}`);
               }
-            }}>学習履歴をエクスポート</button>
+            }}>JSONを出力</button>
+            <button type="button" disabled={!bank} onClick={() => {
+              if (!bank) return;
+              try {
+                downloadLearningHistoryCsv(bank, goal, studyPlan);
+                setMessage("学習履歴CSVをファイルへ出力しました。");
+              } catch (error) {
+                setMessage(`学習履歴をエクスポートできませんでした: ${toMessage(error)}`);
+              }
+            }}>CSVを出力</button>
           </div>
           {bank && (
             <>

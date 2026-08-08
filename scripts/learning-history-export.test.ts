@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { buildLearningHistoryExport, learningHistoryFileName } from "../src/questionBank/learningHistoryExport";
+import { buildLearningHistoryCsv, buildLearningHistoryExport, learningHistoryFileName } from "../src/questionBank/learningHistoryExport";
 import type { Goal, StudyPlan } from "../src/types";
 import type { QuestionBank } from "../src/questionBank/types";
 
@@ -70,4 +70,15 @@ test("uses null for unavailable plan values and zero denominators", () => {
 test("creates a safe JSON filename from the material title", () => {
   assert.equal(learningHistoryFileName("教材/A:筆記"), "教材_A_筆記-learning-history.json");
   assert.equal(learningHistoryFileName("   "), "material-learning-history.json");
+  assert.equal(learningHistoryFileName("教材A", "csv"), "教材A-learning-history.csv");
+});
+
+test("builds one CSV row per attempt and keeps unanswered problems", () => {
+  const csv = buildLearningHistoryCsv(bank, goal, plan, "2026-08-08T01:00:00.000Z");
+  const lines = csv.split("\r\n");
+  assert.equal(lines.length, 4);
+  assert.match(lines[0], /^"exportVersion","exportedAt","goalId"/);
+  assert.match(lines[1], /"p1","第1章","1","completed","1","2026-08-01T00:00:00Z","1","1","2","50","partial","false","low",""$/);
+  assert.match(lines[2], /"p1","第1章","1","completed","2","2026-08-02T00:00:00Z","2","2","2","100","correct","true","high","理解した"$/);
+  assert.match(lines[3], /"p2","第1章","2","active","","","","","","","","","",""$/);
 });

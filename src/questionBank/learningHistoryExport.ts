@@ -95,20 +95,81 @@ export function downloadLearningHistoryJson(
   plan: StudyPlan | undefined,
 ) {
   const json = JSON.stringify(buildLearningHistoryExport(bank, goal, plan), null, 2);
-  const blob = new Blob([json], { type: "application/json;charset=utf-8" });
+  downloadFile(json, "application/json;charset=utf-8", learningHistoryFileName(bank.title, "json"));
+}
+
+export function buildLearningHistoryCsv(
+  bank: QuestionBank,
+  goal: Goal,
+  plan: StudyPlan | undefined,
+  exportedAt = new Date().toISOString(),
+) {
+  const resource = findStudyResource(bank, plan);
+  const rounds = new Map(bank.rounds.map((round) => [round.id, round.roundNumber]));
+  const headers = [
+    "exportVersion", "exportedAt", "goalId", "goalName", "examDate",
+    "resourceId", "resourceName", "resourceType", "resourceCurrent", "resourceTarget", "resourceUnit", "resourcePercent",
+    "problemId", "section", "number", "reviewStatus", "attemptNumber", "answeredAt", "round",
+    "score", "maxScore", "scoreRate", "result", "correct", "confidence", "memo",
+  ];
+  const common = [
+    EXPORT_VERSION, exportedAt, goal.id, goal.title, goal.examDate,
+    bank.materialId, bank.title, resource?.type, resource?.currentAmount, resource?.targetAmount,
+    resource?.unit, resource ? percentage(resource.currentAmount, resource.targetAmount) : null,
+  ];
+  const rows = bank.sections.flatMap((section) => section.problems.flatMap((problem) => {
+    const problemFields = [problem.id, section.title, problem.number, problem.reviewStatus];
+    if (problem.attempts.length === 0) return [[...common, ...problemFields, ...Array(10).fill(null)]];
+    return [...problem.attempts].sort(compareAttempts).map((attempt) => {
+      const result = deriveScoreResult(attempt.earnedScore, attempt.maxScore);
+      return [
+        ...common,
+        ...problemFields,
+        attempt.attemptNumber,
+        attempt.answeredAt,
+        rounds.get(attempt.roundId),
+        attempt.earnedScore,
+        attempt.maxScore,
+        attempt.maxScore > 0 ? round1((attempt.earnedScore / attempt.maxScore) * 100) : null,
+        result,
+        result === "correct",
+        attempt.confidence,
+        attempt.note,
+      ];
+    });
+  }));
+  return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+}
+
+export function downloadLearningHistoryCsv(
+  bank: QuestionBank,
+  goal: Goal,
+  plan: StudyPlan | undefined,
+) {
+  const csv = `\uFEFF${buildLearningHistoryCsv(bank, goal, plan)}`;
+  downloadFile(csv, "text/csv;charset=utf-8", learningHistoryFileName(bank.title, "csv"));
+}
+
+function downloadFile(content: string, type: string, fileName: string) {
+  const blob = new Blob([content], { type });
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
-  link.download = learningHistoryFileName(bank.title);
+  link.download = fileName;
   document.body.appendChild(link);
   link.click();
   link.remove();
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-export function learningHistoryFileName(title: string) {
+export function learningHistoryFileName(title: string, extension: "json" | "csv" = "json") {
   const safeTitle = title.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_") || "material";
-  return `${safeTitle}-learning-history.json`;
+  return `${safeTitle}-learning-history.${extension}`;
+}
+
+function csvCell(value: unknown) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replaceAll('"', '""')}"`;
 }
 
 function findStudyResource(bank: QuestionBank, plan: StudyPlan | undefined): StudyResource | undefined {
