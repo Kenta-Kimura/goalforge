@@ -68,9 +68,10 @@ test("uses null for unavailable plan values and zero denominators", () => {
 });
 
 test("creates a safe JSON filename from the material title", () => {
-  assert.equal(learningHistoryFileName("教材/A:筆記"), "教材_A_筆記-learning-history.json");
-  assert.equal(learningHistoryFileName("   "), "material-learning-history.json");
-  assert.equal(learningHistoryFileName("教材A", "csv"), "教材A-learning-history.csv");
+  const exportedAt = new Date(2026, 7, 8, 10, 30, 45);
+  assert.equal(learningHistoryFileName("教材/A:筆記", "json", exportedAt), "教材_A_筆記-learning-history-20260808-103045.json");
+  assert.equal(learningHistoryFileName("   ", "json", exportedAt), "material-learning-history-20260808-103045.json");
+  assert.equal(learningHistoryFileName("教材A", "csv", exportedAt), "教材A-learning-history-20260808-103045.csv");
 });
 
 test("builds one CSV row per attempt and keeps unanswered problems", () => {

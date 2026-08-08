@@ -94,8 +94,9 @@ export function downloadLearningHistoryJson(
   goal: Goal,
   plan: StudyPlan | undefined,
 ) {
-  const json = JSON.stringify(buildLearningHistoryExport(bank, goal, plan), null, 2);
-  downloadFile(json, "application/json;charset=utf-8", learningHistoryFileName(bank.title, "json"));
+  const exportedAt = new Date();
+  const json = JSON.stringify(buildLearningHistoryExport(bank, goal, plan, exportedAt.toISOString()), null, 2);
+  downloadFile(json, "application/json;charset=utf-8", learningHistoryFileName(bank.title, "json", exportedAt));
 }
 
 export function buildLearningHistoryCsv(
@@ -146,8 +147,9 @@ export function downloadLearningHistoryCsv(
   goal: Goal,
   plan: StudyPlan | undefined,
 ) {
-  const csv = `\uFEFF${buildLearningHistoryCsv(bank, goal, plan)}`;
-  downloadFile(csv, "text/csv;charset=utf-8", learningHistoryFileName(bank.title, "csv"));
+  const exportedAt = new Date();
+  const csv = `\uFEFF${buildLearningHistoryCsv(bank, goal, plan, exportedAt.toISOString())}`;
+  downloadFile(csv, "text/csv;charset=utf-8", learningHistoryFileName(bank.title, "csv", exportedAt));
 }
 
 function downloadFile(content: string, type: string, fileName: string) {
@@ -162,9 +164,23 @@ function downloadFile(content: string, type: string, fileName: string) {
   window.setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
-export function learningHistoryFileName(title: string, extension: "json" | "csv" = "json") {
+export function learningHistoryFileName(
+  title: string,
+  extension: "json" | "csv" = "json",
+  exportedAt = new Date(),
+) {
   const safeTitle = title.trim().replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_") || "material";
-  return `${safeTitle}-learning-history.${extension}`;
+  return `${safeTitle}-learning-history-${localTimestamp(exportedAt)}.${extension}`;
+}
+
+function localTimestamp(value: Date) {
+  const date = [value.getFullYear(), value.getMonth() + 1, value.getDate()]
+    .map((part) => String(part).padStart(2, "0"))
+    .join("");
+  const time = [value.getHours(), value.getMinutes(), value.getSeconds()]
+    .map((part) => String(part).padStart(2, "0"))
+    .join("");
+  return `${date}-${time}`;
 }
 
 function csvCell(value: unknown) {
