@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   calculateBankSummary,
+  calculateContentLabelSummaries,
   calculateMockExamSummary,
   calculatePracticeRoundAccuracies,
   calculateRoundSummary,
@@ -10,8 +11,90 @@ import {
   latestAttempt,
   matchesFilter,
 } from "../src/questionBank/analytics";
+import { findNextUnansweredProblemId } from "../src/questionBank/QuestionBankView";
+
+test("セクション別・内容ラベル別に各問題の最新解答を集計する", () => {
+  const bank = makeBank([
+    problem("p1", "active", []),
+    problem("p2", "active", []),
+    problem("p3", "active", []),
+  ]);
+  bank.sections[0].problems[0].title = "語彙";
+  bank.sections[0].problems[1].title = "語彙";
+  bank.sections[0].problems[2].title = "";
+  bank.sections[0].problems[0].attempts = [
+    { id: "old", problemId: "p1", roundId: "r1", answeredAt: null, attemptNumber: 1, earnedScore: 0, maxScore: 2, confidence: null },
+    { id: "latest", problemId: "p1", roundId: "r2", answeredAt: null, attemptNumber: 2, earnedScore: 2, maxScore: 2, confidence: null },
+  ];
+  bank.sections[0].problems[1].attempts = [
+    { id: "partial", problemId: "p2", roundId: "r1", answeredAt: null, attemptNumber: 1, earnedScore: 1, maxScore: 2, confidence: null },
+  ];
+  bank.sections.push({
+    ...bank.sections[0],
+    id: "section-2",
+    title: "第2問",
+    order: 1,
+    problems: [{ ...problem("p4", "active", []), sectionId: "section-2", title: "語彙" }],
+  });
+
+  assert.deepEqual(calculateContentLabelSummaries(bank), [{
+    sectionId: "section-1",
+    sectionTitle: "第1問",
+    summary: {
+      label: "セクション合計",
+      total: 3,
+      answered: 2,
+      correct: 1,
+      partial: 1,
+      incorrect: 0,
+      earnedScore: 3,
+      maxScore: 4,
+      accuracyRate: 0.5,
+      scoreRate: 0.75,
+    },
+    labels: [{
+      label: "語彙",
+      total: 2,
+      answered: 2,
+      correct: 1,
+      partial: 1,
+      incorrect: 0,
+      earnedScore: 3,
+      maxScore: 4,
+      accuracyRate: 0.5,
+      scoreRate: 0.75,
+    }],
+  }, {
+    sectionId: "section-2",
+    sectionTitle: "第2問",
+    summary: {
+      label: "セクション合計",
+      total: 1,
+      answered: 0,
+      correct: 0,
+      partial: 0,
+      incorrect: 0,
+      earnedScore: 0,
+      maxScore: 0,
+      accuracyRate: null,
+      scoreRate: null,
+    },
+    labels: [{
+      label: "語彙",
+      total: 1,
+      answered: 0,
+      correct: 0,
+      partial: 0,
+      incorrect: 0,
+      earnedScore: 0,
+      maxScore: 0,
+      accuracyRate: null,
+      scoreRate: null,
+    }],
+  }]);
+});
 import { formatAttemptDate } from "../src/questionBank/presentation";
-import { validateScore } from "../src/questionBank/service";
+import { scoreAnswer, validateScore } from "../src/questionBank/service";
 import type { Problem, ProblemAttempt, QuestionBank, QuestionFilters } from "../src/questionBank/types";
 
 test("得点から○△×を導出する", () => {
@@ -27,6 +110,22 @@ test("得点の範囲を検証する", () => {
   assert.throws(() => validateScore(-1, 5));
   assert.throws(() => validateScore(6, 5));
   assert.throws(() => validateScore(0, 0));
+});
+
+test("正答と自分の解答を前後の空白を除いて完全一致で採点する", () => {
+  assert.equal(scoreAnswer(" A ", "A", 3), 3);
+  assert.equal(scoreAnswer("a", "A", 3), 0);
+  assert.equal(scoreAnswer("③", "③", 2.5), 2.5);
+});
+
+test("保存後は同じ周回で解答済みの問題を飛ばして次の問題へ進む", () => {
+  const candidates = [
+    problem("p1", "active", [attempt("a1", "p1", 1, 1, null, 1, undefined, "round-1")]),
+    problem("p2", "active", []),
+    problem("p3", "active", []),
+  ];
+  assert.equal(findNextUnansweredProblemId(["p1", "p2", "p3"], candidates, "round-1"), "p2");
+  assert.equal(findNextUnansweredProblemId(["p1"], candidates, "round-1"), undefined);
 });
 
 test("点数と自信を独立して集計する", () => {

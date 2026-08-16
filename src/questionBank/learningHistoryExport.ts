@@ -2,7 +2,7 @@ import type { Goal, StudyPlan, StudyResource } from "../types";
 import { deriveScoreResult } from "./analytics";
 import type { Confidence, ProblemAttempt, QuestionBank } from "./types";
 
-const EXPORT_VERSION = "1.0";
+const EXPORT_VERSION = "1.1";
 
 type ConfidenceKey = Exclude<Confidence, null> | "unset";
 
@@ -80,6 +80,8 @@ export function buildLearningHistoryExport(
         problemId: problem.id,
         section: section.title,
         number: problem.number,
+        contentLabel: problem.title ?? null,
+        correctAnswer: problem.correctAnswer ?? null,
         reviewStatus: problem.reviewStatus,
         attemptCount: history.length,
         latestResult: latest ? exportAttempt(latest, rounds, true) : null,
@@ -110,8 +112,8 @@ export function buildLearningHistoryCsv(
   const headers = [
     "exportVersion", "exportedAt", "goalId", "goalName", "examDate",
     "resourceId", "resourceName", "resourceType", "resourceCurrent", "resourceTarget", "resourceUnit", "resourcePercent",
-    "problemId", "section", "number", "reviewStatus", "attemptNumber", "answeredAt", "round",
-    "score", "maxScore", "scoreRate", "result", "correct", "confidence", "memo",
+    "problemId", "section", "number", "contentLabel", "correctAnswer", "reviewStatus", "attemptNumber", "answeredAt", "round",
+    "userAnswer", "score", "maxScore", "scoreRate", "result", "correct", "confidence", "memo",
   ];
   const common = [
     EXPORT_VERSION, exportedAt, goal.id, goal.title, goal.examDate,
@@ -119,8 +121,8 @@ export function buildLearningHistoryCsv(
     resource?.unit, resource ? percentage(resource.currentAmount, resource.targetAmount) : null,
   ];
   const rows = bank.sections.flatMap((section) => section.problems.flatMap((problem) => {
-    const problemFields = [problem.id, section.title, problem.number, problem.reviewStatus];
-    if (problem.attempts.length === 0) return [[...common, ...problemFields, ...Array(10).fill(null)]];
+    const problemFields = [problem.id, section.title, problem.number, problem.title, problem.correctAnswer, problem.reviewStatus];
+    if (problem.attempts.length === 0) return [[...common, ...problemFields, ...Array(11).fill(null)]];
     return [...problem.attempts].sort(compareAttempts).map((attempt) => {
       const result = deriveScoreResult(attempt.earnedScore, attempt.maxScore);
       return [
@@ -129,6 +131,7 @@ export function buildLearningHistoryCsv(
         attempt.attemptNumber,
         attempt.answeredAt,
         rounds.get(attempt.roundId),
+        attempt.userAnswer,
         attempt.earnedScore,
         attempt.maxScore,
         attempt.maxScore > 0 ? round1((attempt.earnedScore / attempt.maxScore) * 100) : null,
@@ -200,6 +203,7 @@ function exportAttempt(attempt: ProblemAttempt, rounds: Map<string, number>, inc
     maxScore: number;
     correct: boolean;
     confidence: Confidence;
+    userAnswer: string | null;
     memo?: string | null;
   } = {
     answeredAt: attempt.answeredAt,
@@ -208,6 +212,7 @@ function exportAttempt(attempt: ProblemAttempt, rounds: Map<string, number>, inc
     maxScore: attempt.maxScore,
     correct: deriveScoreResult(attempt.earnedScore, attempt.maxScore) === "correct",
     confidence: attempt.confidence,
+    userAnswer: attempt.userAnswer ?? null,
   };
   if (includeMemo || attempt.note) exported.memo = attempt.note ?? null;
   return exported;

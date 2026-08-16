@@ -4,6 +4,7 @@ import { isTauriRuntime } from "../lib/tauri";
 import type { Goal, StudyPlan } from "../types";
 import {
   calculateBankSummary,
+  calculateContentLabelSummaries,
   calculateMockExamSummary,
   calculatePracticeRoundAccuracies,
   calculateRoundSummary,
@@ -65,8 +66,21 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
   const [filters, setFilters] = useState<QuestionFilters>(initialFilters);
   const [selectedProblemIds, setSelectedProblemIds] = useState<string[]>([]);
   const [activeMockRoundId, setActiveMockRoundId] = useState("");
-  const [answerRequest, setAnswerRequest] = useState<{ problemId: string; roundId: string } | null>(null);
+  const [answerRequest, setAnswerRequest] = useState<{
+    problemId: string;
+    roundId: string;
+    followingProblemIds: string[];
+  } | null>(null);
   const [historyProblemId, setHistoryProblemId] = useState("");
+  const [historyEditAttemptId, setHistoryEditAttemptId] = useState("");
+  const historyScrollPosition = useRef<{ left: number; top: number } | null>(null);
+  const historyBodyStyle = useRef<{
+    position: string;
+    top: string;
+    left: string;
+    right: string;
+    width: string;
+  } | null>(null);
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(isTauriRuntime());
   const [metricColumns, setMetricColumns] = useState<CustomMetricColumn[]>([]);
@@ -143,6 +157,48 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
   const answerProblem = problems.find((problem) => problem.id === answerRequest?.problemId);
   const historyProblem = problems.find((problem) => problem.id === historyProblemId);
 
+  function openHistory(problemId: string, attemptId = "") {
+    const position = { left: window.scrollX, top: window.scrollY };
+    historyScrollPosition.current = position;
+    if (!historyBodyStyle.current) {
+      historyBodyStyle.current = {
+        position: document.body.style.position,
+        top: document.body.style.top,
+        left: document.body.style.left,
+        right: document.body.style.right,
+        width: document.body.style.width,
+      };
+      document.body.style.position = "fixed";
+      document.body.style.top = `${-position.top}px`;
+      document.body.style.left = `${-position.left}px`;
+      document.body.style.right = "0";
+      document.body.style.width = "100%";
+    }
+    setHistoryEditAttemptId(attemptId);
+    setHistoryProblemId(problemId);
+  }
+
+  function closeHistory(_restoreScroll = true) {
+    const position = historyScrollPosition.current;
+    const bodyStyle = historyBodyStyle.current;
+    setHistoryProblemId("");
+    setHistoryEditAttemptId("");
+    if (!position || !bodyStyle) return;
+    requestAnimationFrame(() => {
+      document.body.style.position = bodyStyle.position;
+      document.body.style.top = bodyStyle.top;
+      document.body.style.left = bodyStyle.left;
+      document.body.style.right = bodyStyle.right;
+      document.body.style.width = bodyStyle.width;
+      window.scrollTo(position.left, position.top);
+      requestAnimationFrame(() => {
+        window.scrollTo(position.left, position.top);
+        historyScrollPosition.current = null;
+        historyBodyStyle.current = null;
+      });
+    });
+  }
+
   if (!isTauriRuntime()) {
     return (
       <div className="panel desktop-required">
@@ -213,6 +269,7 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
             <>
               <BankSummary bank={bank} />
               <LearningRoundSummary bank={bank} />
+              <ContentLabelSummaryPanel bank={bank} />
               <CustomMetricOverallSummary
                 columns={metricColumns}
                 loading={metricLoading}
@@ -250,8 +307,9 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
                     setSelectedProblemIds([]);
                   }, "復習状態を更新しました。")
                 }
-                onHistory={setHistoryProblemId}
-                onAnswer={async (problemId) => {
+                onHistory={(problemId) => openHistory(problemId)}
+                onEditAttempt={(problemId, attemptId) => openHistory(problemId, attemptId)}
+                onAnswer={async (problemId, followingProblemIds) => {
                   const targetProblem = problems.find((problem) => problem.id === problemId);
                   const answeredRoundIds = new Set(
                     targetProblem?.attempts.map((attempt) => attempt.roundId) ?? [],
@@ -279,7 +337,7 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
                       return;
                     }
                   }
-                  setAnswerRequest({ problemId, roundId: round.id });
+                  setAnswerRequest({ problemId, roundId: round.id, followingProblemIds });
                 }}
               />
               {answerRequest && answerProblem && (
@@ -289,10 +347,27 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
                     problem={answerProblem}
                     roundId={answerRequest.roundId}
                     onClose={() => setAnswerRequest(null)}
-                    onSaved={async () => {
+                    onSaved={async (savedRoundId) => {
                       await refresh();
-                      setAnswerRequest(null);
-                      setMessage("解答を保存しました。");
+                      const nextProblemId = findNextUnansweredProblemId(
+                        answerRequest.followingProblemIds,
+                        problems,
+                        savedRoundId,
+                      );
+                      const nextIndex = nextProblemId
+                        ? answerRequest.followingProblemIds.indexOf(nextProblemId)
+                        : -1;
+                      if (nextIndex >= 0) {
+                        setAnswerRequest({
+                          problemId: nextProblemId!,
+                          roundId: savedRoundId,
+                          followingProblemIds: answerRequest.followingProblemIds.slice(nextIndex + 1),
+                        });
+                        setMessage("解答を保存しました。次の問題へ進みます。");
+                      } else {
+                        setAnswerRequest(null);
+                        setMessage("解答を保存しました。このセクションの最後の問題です。");
+                      }
                     }}
                   />
                 </ModalBackdrop>
@@ -301,11 +376,12 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
                 <HistoryPanel
                   problem={historyProblem}
                   bank={bank}
-                  onClose={() => setHistoryProblemId("")}
+                  initialEditingAttemptId={historyEditAttemptId}
+                  onClose={() => closeHistory()}
                   onChanged={refresh}
                   onAdd={(roundId) => {
-                    setHistoryProblemId("");
-                    setAnswerRequest({ problemId: historyProblem.id, roundId });
+                    closeHistory(false);
+                    setAnswerRequest({ problemId: historyProblem.id, roundId, followingProblemIds: [] });
                   }}
                 />
               )}
@@ -315,6 +391,17 @@ export function ExerciseView({ goal, studyPlan }: { goal: Goal; studyPlan?: Stud
       )}
     </section>
   );
+}
+
+export function findNextUnansweredProblemId(
+  followingProblemIds: string[],
+  problems: Problem[],
+  roundId: string,
+) {
+  return followingProblemIds.find((problemId) => {
+    const problem = problems.find((item) => item.id === problemId);
+    return problem && !problem.attempts.some((attempt) => attempt.roundId === roundId);
+  });
 }
 
 function BankSummary({ bank }: { bank: QuestionBank }) {
@@ -358,6 +445,65 @@ export function LearningRoundSummary({ bank }: { bank: QuestionBank }) {
         </div>
       )}
     </section>
+  );
+}
+
+export function ContentLabelSummaryPanel({ bank }: { bank: QuestionBank }) {
+  const sections = calculateContentLabelSummaries(bank);
+  if (sections.length === 0) return null;
+  return (
+    <details className="panel content-label-summary">
+      <summary>
+        <div>
+        <span className="eyebrow">各問題の最新解答</span>
+        <h2>セクション別・内容ラベル別集計</h2>
+        </div>
+        <span className="content-label-summary-toggle" aria-hidden="true">展開</span>
+      </summary>
+      <div className="content-label-summary-body">
+        {sections.map((section) => (
+          <div className="content-label-section" key={section.sectionId}>
+            <div className="content-label-section-heading">
+              <h3>{section.sectionTitle}</h3>
+              <div>
+                <span>解答 {section.summary.answered}/{section.summary.total}</span>
+                <span>正答率 {section.summary.accuracyRate === null ? "—" : `${(section.summary.accuracyRate * 100).toFixed(1)}%`}</span>
+                <span>○ / △ / × {section.summary.correct} / {section.summary.partial} / {section.summary.incorrect}</span>
+                <span>得点率 {section.summary.scoreRate === null ? "—" : `${section.summary.earnedScore}/${section.summary.maxScore}点 (${(section.summary.scoreRate * 100).toFixed(1)}%)`}</span>
+              </div>
+            </div>
+            <div className="content-label-summary-table-wrap">
+              <table className="content-label-summary-table">
+                <thead>
+                  <tr>
+                    <th>内容ラベル</th>
+                    <th>解答進捗</th>
+                    <th>正答率</th>
+                    <th>○ / △ / ×</th>
+                    <th>得点率</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {section.labels.map((summary) => (
+                    <tr key={summary.label}>
+                      <th scope="row">{summary.label}</th>
+                      <td>{summary.answered}/{summary.total}</td>
+                      <td>{summary.accuracyRate === null ? "—" : `${(summary.accuracyRate * 100).toFixed(1)}%`}</td>
+                      <td>{summary.correct} / {summary.partial} / {summary.incorrect}</td>
+                      <td>
+                        {summary.scoreRate === null
+                          ? "—"
+                          : `${summary.earnedScore}/${summary.maxScore}点 (${(summary.scoreRate * 100).toFixed(1)}%)`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -424,10 +570,11 @@ function isMockRound(bank: QuestionBank, round: QuestionBank["rounds"][number]) 
   return round.targetProblemIds.length > 0 && round.targetProblemIds.every((id) => mockIds.has(id));
 }
 
-function ProblemList({
+export function ProblemList({
   bank, metricColumns, metricLoading, metricError, onReloadMetrics,
   customMetricFilters, setCustomMetricFilters,
   filters, setFilters, selectedProblemIds, setSelectedProblemIds, onStatus, onHistory, onAnswer,
+  onEditAttempt,
 }: {
   bank: QuestionBank;
   metricColumns: CustomMetricColumn[];
@@ -442,19 +589,56 @@ function ProblemList({
   setSelectedProblemIds: (ids: string[]) => void;
   onStatus: (ids: string[], status: ProblemReviewStatus) => void;
   onHistory: (id: string) => void;
-  onAnswer: (id: string) => void;
+  onEditAttempt?: (problemId: string, attemptId: string) => void;
+  onAnswer: (id: string, followingProblemIds: string[]) => void;
 }) {
   const pressedAnswerProblemId = useRef("");
+  const [activeSectionId, setActiveSectionId] = useState(bank.sections[0]?.id ?? "");
+  const [collapsedContentLabels, setCollapsedContentLabels] = useState<Set<string>>(() => new Set());
+  const sectionViews = bank.sections.map((section) => ({
+    section,
+    visibleProblems: section.problems.filter((problem) => (
+      matchesFilter(problem, filters)
+      && (
+        metricLoading
+        || Boolean(metricError)
+        || matchesCustomMetricFilters(problem.id, metricColumns, customMetricFilters)
+      )
+    )),
+  }));
+  const activeSectionView = sectionViews.find(({ section }) => section.id === activeSectionId) ?? sectionViews[0];
 
-  function handleAnswerClick(event: MouseEvent<HTMLButtonElement>, problemId: string) {
+  useEffect(() => {
+    setActiveSectionId((current) => (
+      bank.sections.some((section) => section.id === current)
+        ? current
+        : bank.sections[0]?.id ?? ""
+    ));
+  }, [bank.id, bank.sections]);
+
+  function handleAnswerClick(
+    event: MouseEvent<HTMLButtonElement>,
+    problemId: string,
+    followingProblemIds: string[],
+  ) {
     const isKeyboardActivation = event.detail === 0;
     const isPointerActivationStartedHere = pressedAnswerProblemId.current === problemId;
     pressedAnswerProblemId.current = "";
-    if (isKeyboardActivation || isPointerActivationStartedHere) onAnswer(problemId);
+    if (isKeyboardActivation || isPointerActivationStartedHere) onAnswer(problemId, followingProblemIds);
   }
 
   function updateFilter<Key extends keyof QuestionFilters>(key: Key, value: QuestionFilters[Key]) {
     setFilters({ ...filters, [key]: value });
+  }
+
+  function toggleContentLabel(sectionId: string, label: string) {
+    const key = `${sectionId}\u0000${label}`;
+    setCollapsedContentLabels((current) => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
   }
 
   function toggleFilter<Key extends "statuses" | "results" | "confidences">(
@@ -549,24 +733,46 @@ function ProblemList({
           <button type="button" onClick={onReloadMetrics}>再読み込み</button>
         </div>
       )}
-      {bank.sections.map((section) => {
-        const visible = section.problems.filter((problem) => (
-          matchesFilter(problem, filters)
-          && (
-            metricLoading
-            || Boolean(metricError)
-            || matchesCustomMetricFilters(problem.id, metricColumns, customMetricFilters)
-          )
-        ));
+      {sectionViews.length > 0 && (
+        <div className="question-section-tabs" role="tablist" aria-label="問題セクション">
+          {sectionViews.map(({ section, visibleProblems }) => (
+            <button
+              key={section.id}
+              type="button"
+              role="tab"
+              aria-selected={section.id === activeSectionView?.section.id}
+              aria-controls={`question-section-${section.id}`}
+              className={section.id === activeSectionView?.section.id ? "selected" : ""}
+              onClick={() => setActiveSectionId(section.id)}
+            >
+              <strong>{section.title}</strong>
+              <small>{visibleProblems.length}/{section.problems.length}問</small>
+            </button>
+          ))}
+        </div>
+      )}
+      {activeSectionView && (() => {
+        const { section, visibleProblems: visible } = activeSectionView;
         const sectionProblemIds = section.problems.map((problem) => problem.id);
+        const contentLabelGroups = groupProblemsByContentLabel(visible);
+        const orderedVisibleProblems = contentLabelGroups.flatMap((group) => group.problems);
+        const followingProblemIdsById = new Map(orderedVisibleProblems.map((problem, index) => [
+          problem.id,
+          orderedVisibleProblems.slice(index + 1).map((item) => item.id),
+        ]));
         return (
-          <details className="panel question-section" key={section.id} open>
-            <summary>
+          <section
+            className="panel question-section"
+            key={section.id}
+            id={`question-section-${section.id}`}
+            role="tabpanel"
+          >
+            <header className="question-section-heading">
               <span><strong>{section.title}</strong> <small>{section.evaluationType === "binary" ? "正誤" : section.evaluationType === "partial_score" ? "部分点" : "混在"}{section.isMockExamSection ? "・模擬試験" : ""}</small></span>
               <span className="section-summary-actions">
                 <span>{visible.length}/{section.problems.length}問</span>
               </span>
-            </summary>
+            </header>
             <div className="problem-table-wrap">
               <table className="problem-table">
                 <thead><tr>
@@ -586,14 +792,37 @@ function ProblemList({
                   <th>操作</th>
                 </tr></thead>
                 <tbody>
-                  {visible.map((problem) => {
-                    const attempt = latestAttempt(problem);
+                  {contentLabelGroups.map((group) => {
+                    const groupKey = `${section.id}\u0000${group.label}`;
+                    const collapsed = collapsedContentLabels.has(groupKey);
                     return (
-                      <tr key={problem.id}>
-                        <td><input type="checkbox" aria-label={`No.${problem.number}を選択`} checked={selectedProblemIds.includes(problem.id)} onChange={(event) => setSelectedProblemIds(event.target.checked ? [...selectedProblemIds, problem.id] : selectedProblemIds.filter((id) => id !== problem.id))} /></td>
-                        <td><strong>No.{problem.number}</strong>{problem.title && <small>{problem.title}</small>}</td>
+                      <React.Fragment key={groupKey}>
+                        <tr className="content-label-group-row">
+                          <th colSpan={6 + metricColumns.length}>
+                            <button
+                              type="button"
+                              aria-expanded={!collapsed}
+                              onClick={() => toggleContentLabel(section.id, group.label)}
+                            >
+                              <span>{group.label || "内容ラベルなし"}</span>
+                              <small>{group.problems.length}問・{collapsed ? "展開" : "閉じる"}</small>
+                            </button>
+                          </th>
+                        </tr>
+                        {!collapsed && group.problems.map((problem) => {
+                          const attempt = latestAttempt(problem);
+                          return (
+                            <tr key={problem.id}>
+                        <td><input type="checkbox" aria-label={`${problem.number}を選択`} checked={selectedProblemIds.includes(problem.id)} onChange={(event) => setSelectedProblemIds(event.target.checked ? [...selectedProblemIds, problem.id] : selectedProblemIds.filter((id) => id !== problem.id))} /></td>
+                        <td><strong>{problem.number}</strong>{problem.title && <small>{problem.title}</small>}</td>
                         <td>
-                          <PracticeRoundHistoryMarks bank={bank} problem={problem} />
+                          <PracticeRoundHistoryMarks
+                            bank={bank}
+                            problem={problem}
+                            onEditAttempt={onEditAttempt
+                              ? (attemptId) => onEditAttempt(problem.id, attemptId)
+                              : undefined}
+                          />
                         </td>
                         <td>{attempt ? formatAttemptDay(attempt.answeredAt) : "—"}</td>
                         <td>
@@ -613,23 +842,47 @@ function ProblemList({
                             type="button"
                             onPointerDown={() => { pressedAnswerProblemId.current = problem.id; }}
                             onPointerCancel={() => { pressedAnswerProblemId.current = ""; }}
-                            onClick={(event) => handleAnswerClick(event, problem.id)}
+                            onClick={(event) => handleAnswerClick(
+                              event,
+                              problem.id,
+                              followingProblemIdsById.get(problem.id) ?? [],
+                            )}
                           >
                             解答
                           </button>
                           <button onClick={() => onHistory(problem.id)}>履歴</button>
                         </td>
                       </tr>
+                          );
+                        })}
+                      </React.Fragment>
                     );
                   })}
                 </tbody>
               </table>
             </div>
-          </details>
+          </section>
         );
-      })}
+      })()}
     </div>
   );
+}
+
+export interface ContentLabelProblemGroup {
+  label: string;
+  problems: Problem[];
+}
+
+export function groupProblemsByContentLabel(problems: Problem[]): ContentLabelProblemGroup[] {
+  const groups = new Map<string, Problem[]>();
+  for (const problem of problems) {
+    const label = problem.title?.trim() ?? "";
+    groups.set(label, [...(groups.get(label) ?? []), problem]);
+  }
+  return [...groups.entries()].map(([label, groupedProblems]) => ({
+    label,
+    problems: groupedProblems,
+  }));
 }
 
 export function CustomMetricHeader({
@@ -800,7 +1053,7 @@ export function AnswerPanel({
   problem: Problem;
   roundId: string;
   onClose: () => void;
-  onSaved: () => Promise<void>;
+  onSaved: (savedRoundId: string) => Promise<void>;
 }) {
   const section = bank.sections.find((item) => item.id === problem.sectionId)!;
   const binary = problem.evaluationTypeOverride === "binary" || (!problem.evaluationTypeOverride && section.evaluationType === "binary");
@@ -808,6 +1061,7 @@ export function AnswerPanel({
   const [maxScore, setMaxScore] = useState(problem.defaultMaxScore);
   const [confidence, setConfidence] = useState<Confidence>(null);
   const [note, setNote] = useState("");
+  const [userAnswer, setUserAnswer] = useState("");
   const [selectedRoundId, setSelectedRoundId] = useState(roundId);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
@@ -816,6 +1070,7 @@ export function AnswerPanel({
     setMaxScore(problem.defaultMaxScore);
     setConfidence(null);
     setNote("");
+    setUserAnswer("");
     setSelectedRoundId(roundId);
   }, [problem.id, problem.defaultMaxScore, roundId]);
   async function submit(event?: FormEvent) {
@@ -831,8 +1086,10 @@ export function AnswerPanel({
         maxScore,
         confidence,
         note,
+        userAnswer,
+        correctAnswer: problem.correctAnswer,
       });
-      await onSaved();
+      await onSaved(selectedRoundId);
     } catch (cause) {
       setError(toMessage(cause));
     } finally {
@@ -843,7 +1100,7 @@ export function AnswerPanel({
     <form className="modal-panel answer-panel" onSubmit={submit}>
       <button className="dialog-close" type="button" onClick={onClose}>閉じる</button>
       <span className="eyebrow">{bank.title}・{section.title}</span>
-      <h2>No.{problem.number} 解答履歴を登録</h2>
+      <h2>{problem.number} 解答履歴を登録</h2>
       <PracticeRoundHistoryMarks bank={bank} problem={problem} />
       <label>周回
         <select
@@ -863,16 +1120,24 @@ export function AnswerPanel({
         </select>
       </label>
       {binary && (
-        <div className="binary-buttons">
-          <button type="button" className={earnedScore === 1 && maxScore === 1 ? "selected" : ""} onClick={() => { setEarnedScore(1); setMaxScore(1); }}>○ 正解 1/1</button>
-          <button type="button" className={earnedScore === 0 && maxScore === 1 ? "selected" : ""} onClick={() => { setEarnedScore(0); setMaxScore(1); }}>× 不正解 0/1</button>
+        <div className="answer-text-fields">
+          <label>自分の解答
+            <input autoFocus value={userAnswer} onChange={(event) => {
+              setUserAnswer(event.target.value);
+            }} placeholder="例: A、③、○" />
+          </label>
+          {problem.correctAnswer?.trim() ? (
+            <p className="helper-text">保存後に正誤と得点を自動判定します。</p>
+          ) : <p className="helper-text">正答が未登録のため、得点を手動で入力してください。</p>}
         </div>
       )}
-      <div className="score-fields">
-        <label>得点<input autoFocus type="number" min="0" step="0.001" value={earnedScore} onChange={(event) => setEarnedScore(event.target.valueAsNumber)} /></label>
-        <span>/</span>
-        <label>満点<input type="number" min="1" step="0.001" value={maxScore} onChange={(event) => setMaxScore(event.target.valueAsNumber)} /></label>
-      </div>
+      {(!binary || !problem.correctAnswer?.trim()) && (
+        <div className="score-fields">
+          <label>得点<input autoFocus={!binary} type="number" min="0" step="0.001" value={earnedScore} onChange={(event) => setEarnedScore(event.target.valueAsNumber)} /></label>
+          <span>/</span>
+          <label>満点<input type="number" min="1" step="0.001" value={maxScore} onChange={(event) => setMaxScore(event.target.valueAsNumber)} /></label>
+        </div>
+      )}
       <Segmented label="確信度" options={[["high", "高"], ["medium", "中"], ["low", "低"], ["", "未設定"]]} value={confidence ?? ""} onChange={(value) => setConfidence((value || null) as Confidence)} />
       <label>メモ（任意）<textarea value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></label>
       {error && <p className="form-error">{error}</p>}
@@ -911,6 +1176,7 @@ export function ProblemEditPanel({
     evaluationTypeOverride?: "binary" | "partial_score";
     defaultMaxScore: number;
     supplementalInfo?: string;
+    correctAnswer?: string;
   }) => Promise<void>;
 }) {
   const [number, setNumber] = useState(problem.number);
@@ -919,6 +1185,7 @@ export function ProblemEditPanel({
   const [format, setFormat] = useState(problem.evaluationTypeOverride ?? "");
   const [maxScore, setMaxScore] = useState(problem.defaultMaxScore);
   const [supplementalInfo, setSupplementalInfo] = useState(problem.supplementalInfo ?? "");
+  const [correctAnswer, setCorrectAnswer] = useState(problem.correctAnswer ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   return (
@@ -935,6 +1202,7 @@ export function ProblemEditPanel({
           evaluationTypeOverride: (format || undefined) as "binary" | "partial_score" | undefined,
           defaultMaxScore: maxScore,
           supplementalInfo,
+          correctAnswer,
         });
       } catch (cause) {
         setError(toMessage(cause));
@@ -943,9 +1211,9 @@ export function ProblemEditPanel({
       }
     }}>
       <button className="dialog-close" type="button" onClick={onCancel}>閉じる</button>
-      <h2>No.{problem.number}を編集</h2>
-      <label>問題番号<input value={number} onChange={(event) => setNumber(event.target.value)} required /></label>
-      <label>問題名<input value={title} onChange={(event) => setTitle(event.target.value)} /></label>
+      <h2>{problem.number}を編集</h2>
+      <label>教材上の番号<input value={number} onChange={(event) => setNumber(event.target.value)} required /><small className="helper-text">例: No.1、(1)、①。入力した表記をそのまま表示します。</small></label>
+      <label>内容ラベル（任意）<input value={title} onChange={(event) => setTitle(event.target.value)} /><small className="helper-text">番号だけでは内容を判別しにくい場合のみ入力します。</small></label>
       <label>問題形式
         <select value={format} onChange={(event) => setFormat(event.target.value)}>
           <option value="">大問の設定を使用</option>
@@ -954,6 +1222,7 @@ export function ProblemEditPanel({
         </select>
       </label>
       <label>配点<input type="number" min="1" step="0.001" value={maxScore} onChange={(event) => setMaxScore(event.target.valueAsNumber)} required /></label>
+      <label>正答（任意）<input value={correctAnswer} onChange={(event) => setCorrectAnswer(event.target.value)} placeholder="例: A、③、○" /><small className="helper-text">正誤問題では、自分の解答と前後の空白を除いて完全一致した場合に自動で満点になります。</small></label>
       <label>所属セクション
         <select value={sectionId} onChange={(event) => setSectionId(event.target.value)}>
           {bank.sections.map((section) => <option key={section.id} value={section.id}>{section.title}</option>)}
@@ -982,7 +1251,7 @@ export function DeleteProblemPanel({
   const [error, setError] = useState("");
   return (
     <section className="modal-panel delete-problem-panel" role="alertdialog" aria-modal="true">
-      <h2>No.{problem.number}を削除しますか？</h2>
+      <h2>{problem.number}を削除しますか？</h2>
       <p>この操作は取り消せません。</p>
       {problem.attempts.length > 0 && (
         <p className="delete-warning">関連する解答履歴 {problem.attempts.length}件もSQLiteから削除されます。</p>
@@ -1009,17 +1278,22 @@ export function DeleteProblemPanel({
 export function HistoryPanel({
   problem,
   bank,
+  initialEditingAttemptId = "",
   onClose,
   onChanged,
   onAdd,
 }: {
   problem: Problem;
   bank: QuestionBank;
+  initialEditingAttemptId?: string;
   onClose: () => void;
   onChanged: () => Promise<void>;
   onAdd: (roundId: string) => void;
 }) {
-  const [editing, setEditing] = useState<ProblemAttempt | null>(null);
+  const [editing, setEditing] = useState<ProblemAttempt | null>(() => (
+    problem.attempts.find((attempt) => attempt.id === initialEditingAttemptId) ?? null
+  ));
+  const [closeOnSaveAttemptId, setCloseOnSaveAttemptId] = useState(initialEditingAttemptId);
   const [deletingAttemptId, setDeletingAttemptId] = useState("");
   const roundHistory = getPracticeRoundHistory(bank, problem);
   async function remove(id: string) {
@@ -1029,9 +1303,9 @@ export function HistoryPanel({
   }
   return (
     <div className="history-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="history-dialog" role="dialog" aria-modal="true" aria-label={`問題No.${problem.number}の履歴`}>
+      <section className="history-dialog" role="dialog" aria-modal="true" aria-label={`問題${problem.number}の履歴`}>
         <button className="dialog-close" onClick={onClose}>閉じる</button>
-        <h2>問題 No.{problem.number}</h2>
+        <h2>問題 {problem.number}</h2>
         <p>配点: {problem.defaultMaxScore}点・現在の状態: {statusLabels[problem.reviewStatus]}</p>
         {roundHistory.length === 0 && <p>周回履歴はありません。</p>}
         {roundHistory.map((entry) => {
@@ -1052,9 +1326,18 @@ export function HistoryPanel({
               <AttemptEditForm
                 key={entry.roundId}
                 attempt={attempt}
+                problem={problem}
                 roundNumber={entry.roundNumber}
-                onCancel={() => setEditing(null)}
-                onSaved={async () => { setEditing(null); await onChanged(); }}
+                onCancel={() => {
+                  setEditing(null);
+                  setCloseOnSaveAttemptId("");
+                }}
+                onSaved={async () => {
+                  const closeAfterSave = closeOnSaveAttemptId === attempt.id;
+                  if (!closeAfterSave) setEditing(null);
+                  await onChanged();
+                  if (closeAfterSave) onClose();
+                }}
               />
             );
           }
@@ -1066,10 +1349,15 @@ export function HistoryPanel({
                 <div><dt>得点</dt><dd>{scoreMark(deriveScoreResult(attempt.earnedScore, attempt.maxScore))} {attempt.earnedScore} / {attempt.maxScore}</dd></div>
                 <div><dt>得点率</dt><dd>{((attempt.earnedScore / attempt.maxScore) * 100).toFixed(1)}%</dd></div>
                 <div><dt>確信度</dt><dd>{attempt.confidence ? confidenceLabels[attempt.confidence] : "未設定"}</dd></div>
+                <div><dt>自分の解答</dt><dd>{attempt.userAnswer || "—"}</dd></div>
+                <div><dt>正答</dt><dd>{problem.correctAnswer || "—"}</dd></div>
                 <div><dt>メモ</dt><dd>{attempt.note || "—"}</dd></div>
               </dl>
               <div className="history-entry-actions">
-                <button onClick={() => setEditing(attempt)}>編集</button>
+                <button onClick={() => {
+                  setCloseOnSaveAttemptId("");
+                  setEditing(attempt);
+                }}>編集</button>
                 {deletingAttemptId === attempt.id ? (
                   <>
                     <span>本当に削除しますか？</span>
@@ -1090,11 +1378,13 @@ export function HistoryPanel({
 
 export function AttemptEditForm({
   attempt,
+  problem,
   roundNumber,
   onCancel,
   onSaved,
 }: {
   attempt: ProblemAttempt;
+  problem?: Problem;
   roundNumber: number;
   onCancel: () => void;
   onSaved: () => Promise<void>;
@@ -1104,6 +1394,7 @@ export function AttemptEditForm({
   const [max, setMax] = useState(attempt.maxScore);
   const [confidence, setConfidence] = useState<Confidence>(attempt.confidence);
   const [note, setNote] = useState(attempt.note ?? "");
+  const [userAnswer, setUserAnswer] = useState(attempt.userAnswer ?? "");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const scoreRate = Number.isFinite(earned) && Number.isFinite(max) && max > 0
@@ -1117,11 +1408,13 @@ export function AttemptEditForm({
       try {
         await service.updateAttempt(attempt.id, {
           ...attempt,
-          answeredAt: new Date(answeredAt).toISOString(),
+          answeredAt: answeredAt ? new Date(answeredAt).toISOString() : null,
           earnedScore: earned,
           maxScore: max,
           confidence,
           note,
+          userAnswer,
+          correctAnswer: problem?.correctAnswer,
         });
         await onSaved();
       } catch (cause) {
@@ -1131,10 +1424,20 @@ export function AttemptEditForm({
     }}>
       <strong>{roundNumber}周目</strong>
       <dl>
-        <div><dt><label htmlFor={`attempt-${attempt.id}-answered-at`}>日時</label></dt><dd><input id={`attempt-${attempt.id}-answered-at`} type="datetime-local" required value={answeredAt} onChange={(event) => setAnsweredAt(event.target.value)} /></dd></div>
-        <div className="attempt-score-fields"><dt>得点</dt><dd><input aria-label="獲得点" type="number" min="0" step="0.001" value={earned} onChange={(event) => setEarned(event.target.valueAsNumber)} /> <span>/</span> <input aria-label="満点" type="number" min="1" step="0.001" value={max} onChange={(event) => setMax(event.target.valueAsNumber)} /></dd></div>
-        <div><dt>得点率</dt><dd>{scoreRate}</dd></div>
+        <div><dt><label htmlFor={`attempt-${attempt.id}-answered-at`}>日時</label></dt><dd><input id={`attempt-${attempt.id}-answered-at`} type="datetime-local" value={answeredAt} onChange={(event) => setAnsweredAt(event.target.value)} /></dd></div>
+        {problem?.correctAnswer?.trim() ? (
+          <div><dt>得点</dt><dd>保存後に自動判定</dd></div>
+        ) : (
+          <>
+            <div className="attempt-score-fields"><dt>得点</dt><dd><input aria-label="獲得点" type="number" min="0" step="0.001" value={earned} onChange={(event) => setEarned(event.target.valueAsNumber)} /> <span>/</span> <input aria-label="満点" type="number" min="1" step="0.001" value={max} onChange={(event) => setMax(event.target.valueAsNumber)} /></dd></div>
+            <div><dt>得点率</dt><dd>{scoreRate}</dd></div>
+          </>
+        )}
         <div><dt><label htmlFor={`attempt-${attempt.id}-confidence`}>確信度</label></dt><dd><select id={`attempt-${attempt.id}-confidence`} value={confidence ?? ""} onChange={(event) => setConfidence((event.target.value || null) as Confidence)}><option value="">未設定</option><option value="high">高</option><option value="medium">中</option><option value="low">低</option></select></dd></div>
+        <div><dt><label htmlFor={`attempt-${attempt.id}-user-answer`}>自分の解答</label></dt><dd><input id={`attempt-${attempt.id}-user-answer`} value={userAnswer} onChange={(event) => {
+          setUserAnswer(event.target.value);
+        }} /></dd></div>
+        <div><dt>正答</dt><dd>{problem?.correctAnswer || "—"}</dd></div>
         <div className="attempt-note-field"><dt><label htmlFor={`attempt-${attempt.id}-note`}>メモ</label></dt><dd><textarea id={`attempt-${attempt.id}-note`} value={note} onChange={(event) => setNote(event.target.value)} rows={3} /></dd></div>
       </dl>
       {error && <p className="form-error" role="alert">{error}</p>}
@@ -1153,9 +1456,11 @@ function ScoreMark({ result }: { result?: ReturnType<typeof deriveScoreResult> }
 export function PracticeRoundHistoryMarks({
   bank,
   problem,
+  onEditAttempt,
 }: {
   bank: QuestionBank;
   problem: Problem;
+  onEditAttempt?: (attemptId: string) => void;
 }) {
   const roundHistory = getPracticeRoundHistory(bank, problem);
   return (
@@ -1167,6 +1472,8 @@ export function PracticeRoundHistoryMarks({
                 key={entry.roundId}
                 attempt={entry.attempt}
                 roundNumber={entry.roundNumber}
+                correctAnswer={problem.correctAnswer}
+                onEdit={onEditAttempt ? () => onEditAttempt(entry.attempt!.id) : undefined}
               />
             ) : (
               <span
@@ -1186,9 +1493,13 @@ export function PracticeRoundHistoryMarks({
 function HistoryScoreMark({
   attempt,
   roundNumber,
+  correctAnswer,
+  onEdit,
 }: {
   attempt: ProblemAttempt;
   roundNumber: number;
+  correctAnswer?: string;
+  onEdit?: () => void;
 }) {
   const result = deriveScoreResult(attempt.earnedScore, attempt.maxScore);
   const confidence = attempt.confidence ? confidenceLabels[attempt.confidence] : "未設定";
@@ -1206,11 +1517,14 @@ function HistoryScoreMark({
   }
 
   return (
-    <span
+    <button
+      type="button"
       className={`history-score result-${result} confidence-${attempt.confidence ?? "unset"}`}
-      tabIndex={0}
-      aria-label={`${roundNumber}周目、${scoreMark(result)}、確信度${confidence}`}
+      aria-label={`${roundNumber}周目、${scoreMark(result)}、確信度${confidence}、正答${correctAnswer || "未登録"}、自分の解答${attempt.userAnswer || "未登録"}${onEdit ? "、編集" : ""}`}
       aria-describedby={tooltipPosition ? tooltipId : undefined}
+      aria-disabled={!onEdit}
+      tabIndex={onEdit ? 0 : -1}
+      onClick={onEdit}
       onMouseEnter={(event) => showTooltip(event.currentTarget)}
       onMouseLeave={() => setTooltipPosition(null)}
       onFocus={(event) => showTooltip(event.currentTarget)}
@@ -1228,12 +1542,14 @@ function HistoryScoreMark({
           <strong>{roundNumber}周目</strong>
           <span>日時: {formatAttemptDate(attempt.answeredAt)}</span>
           <span>得点: {attempt.earnedScore} / {attempt.maxScore}</span>
+          <span>正答: {correctAnswer || "未登録"}</span>
+          <span>自分の解答: {attempt.userAnswer || "未登録"}</span>
           <span>確信度: {confidence}</span>
           <span>メモ: {attempt.note || "—"}</span>
         </span>,
         document.body,
       )}
-    </span>
+    </button>
   );
 }
 

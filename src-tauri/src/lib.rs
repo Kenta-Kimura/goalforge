@@ -5,8 +5,11 @@ use serde_json::Value;
 use std::{
     collections::HashSet,
     fs,
+    io::{Read, Write},
+    net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
     sync::Mutex,
+    time::Duration,
 };
 use tauri::{Manager, State};
 use uuid::Uuid;
@@ -69,6 +72,7 @@ struct Problem {
     default_max_score: f64,
     evaluation_type_override: Option<String>,
     supplemental_info: Option<String>,
+    correct_answer: Option<String>,
     review_status: String,
     attempts: Vec<ProblemAttempt>,
 }
@@ -85,6 +89,7 @@ struct ProblemAttempt {
     max_score: f64,
     confidence: Option<String>,
     note: Option<String>,
+    user_answer: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -110,6 +115,8 @@ struct AttemptInput {
     max_score: f64,
     confidence: Option<String>,
     note: Option<String>,
+    user_answer: Option<String>,
+    correct_answer: Option<String>,
     next_review_status: Option<String>,
 }
 
@@ -278,6 +285,28 @@ fn initialize_database(path: &PathBuf) -> Result<Connection, String> {
         transaction
             .execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (5, ?1)",
+                [now()],
+            )
+            .map_err(|error| error.to_string())?;
+        transaction.commit().map_err(|error| error.to_string())?;
+    }
+    let has_v6 = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if !has_v6 {
+        let transaction = connection
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute_batch(include_str!("../migrations/006_answer_text.sql"))
+            .map_err(|error| error.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (6, ?1)",
                 [now()],
             )
             .map_err(|error| error.to_string())?;
@@ -524,7 +553,7 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
     let mut statement = connection
         .prepare(
             "SELECT id, number, title, sort_order, default_max_score_milli,
-                    evaluation_type_override, review_status, supplemental_info
+                    evaluation_type_override, review_status, supplemental_info, correct_answer
              FROM problems WHERE section_id = ?1 ORDER BY sort_order, id",
         )
         .map_err(|error| error.to_string())?;
@@ -539,6 +568,7 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, String>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(|error| error.to_string())?;
@@ -553,6 +583,7 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
             evaluation_type_override,
             review_status,
             supplemental_info,
+            correct_answer,
         ) = row.map_err(|error| error.to_string())?;
         problems.push(Problem {
             attempts: load_attempts(connection, &id)?,
@@ -564,6 +595,7 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
             default_max_score: score(max_score),
             evaluation_type_override,
             supplemental_info,
+            correct_answer,
             review_status,
         });
     }
@@ -573,7 +605,7 @@ fn load_problems(connection: &Connection, section_id: &str) -> Result<Vec<Proble
 fn load_attempts(connection: &Connection, problem_id: &str) -> Result<Vec<ProblemAttempt>, String> {
     let mut statement = connection
         .prepare(
-            "SELECT id, round_id, answered_at, attempt_number, earned_score_milli, max_score_milli, confidence, note
+            "SELECT id, round_id, answered_at, attempt_number, earned_score_milli, max_score_milli, confidence, note, user_answer
              FROM problem_attempts WHERE problem_id = ?1 ORDER BY attempt_number DESC",
         )
         .map_err(|error| error.to_string())?;
@@ -589,6 +621,7 @@ fn load_attempts(connection: &Connection, problem_id: &str) -> Result<Vec<Proble
                 max_score: score(row.get(5)?),
                 confidence: row.get(6)?,
                 note: row.get(7)?,
+                user_answer: row.get(8)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -823,16 +856,18 @@ fn save_bank_transaction(transaction: &Transaction, bank: &QuestionBank) -> Resu
             transaction
                 .execute(
                     "INSERT INTO problems(id, section_id, number, title, sort_order, default_max_score_milli,
-                                          evaluation_type_override, review_status, supplemental_info)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                                          evaluation_type_override, review_status, supplemental_info, correct_answer)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                      ON CONFLICT(id) DO UPDATE SET section_id=excluded.section_id, number=excluded.number,
                        title=excluded.title, sort_order=excluded.sort_order,
                        default_max_score_milli=excluded.default_max_score_milli,
                        evaluation_type_override=excluded.evaluation_type_override,
-                       review_status=excluded.review_status, supplemental_info=excluded.supplemental_info",
+                       review_status=excluded.review_status, supplemental_info=excluded.supplemental_info,
+                       correct_answer=excluded.correct_answer",
                     params![
                         problem.id, section.id, problem.number, problem.title, problem.order,
-                        max_score, problem.evaluation_type_override, problem.review_status, problem.supplemental_info
+                        max_score, problem.evaluation_type_override, problem.review_status, problem.supplemental_info,
+                        problem.correct_answer
                     ],
                 )
                 .map_err(|error| error.to_string())?;
@@ -1032,19 +1067,20 @@ fn create_attempt_transaction(
             .unwrap_or_else(|| Uuid::new_v4().to_string()),
         problem_id: input.problem_id.clone(),
         round_id: input.round_id.clone(),
-        answered_at: Some(input.answered_at.clone().unwrap_or_else(now)),
+        answered_at: input.answered_at.clone(),
         attempt_number,
         earned_score: input.earned_score,
         max_score: input.max_score,
         confidence: input.confidence.clone(),
         note: input.note.clone(),
+        user_answer: input.user_answer.clone(),
     };
     transaction
         .execute(
             "INSERT INTO problem_attempts(
                id,problem_id,round_id,answered_at,attempt_number,
-               earned_score_milli,max_score_milli,confidence,note
-             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+               earned_score_milli,max_score_milli,confidence,note,user_answer
+             ) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
             params![
                 attempt.id,
                 attempt.problem_id,
@@ -1054,7 +1090,8 @@ fn create_attempt_transaction(
                 earned,
                 max,
                 attempt.confidence,
-                attempt.note
+                attempt.note,
+                attempt.user_answer
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -1127,8 +1164,8 @@ fn update_attempt(
     let changed = transaction
         .execute(
             "UPDATE problem_attempts SET problem_id=?1,round_id=?2,answered_at=?3,earned_score_milli=?4,
-             max_score_milli=?5,confidence=?6,note=?7 WHERE id=?8",
-            params![input.problem_id,input.round_id,answered_at,earned,max,input.confidence,input.note,id],
+             max_score_milli=?5,confidence=?6,note=?7,user_answer=?8 WHERE id=?9",
+            params![input.problem_id,input.round_id,answered_at,earned,max,input.confidence,input.note,input.user_answer,id],
         )
         .map_err(|error| error.to_string())?;
     if changed == 0 {
@@ -1145,6 +1182,7 @@ fn update_attempt(
         max_score: input.max_score,
         confidence: input.confidence,
         note: input.note,
+        user_answer: input.user_answer,
     })
 }
 
@@ -1188,6 +1226,56 @@ fn update_problem_statuses(
     Ok(())
 }
 
+#[tauri::command]
+async fn invoke_anki_connect(action: String, params: Value) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || invoke_anki_connect_blocking(action, params))
+        .await
+        .map_err(|error| format!("AnkiConnect通信タスクが失敗しました: {error}"))?
+}
+
+fn invoke_anki_connect_blocking(action: String, params: Value) -> Result<Value, String> {
+    let address = ("127.0.0.1", 8765)
+        .to_socket_addrs()
+        .map_err(|error| format!("AnkiConnectのアドレスを解決できませんでした: {error}"))?
+        .next()
+        .ok_or("AnkiConnectのアドレスを解決できませんでした。")?;
+    let timeout = Duration::from_secs(10);
+    let mut stream = TcpStream::connect_timeout(&address, timeout)
+        .map_err(|error| format!("AnkiConnectへ接続できませんでした: {error}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(60)))
+        .map_err(|error| error.to_string())?;
+    stream
+        .set_write_timeout(Some(timeout))
+        .map_err(|error| error.to_string())?;
+
+    let body = serde_json::json!({ "action": action, "version": 6, "params": params }).to_string();
+    let request = format!(
+        "POST / HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(),
+        body
+    );
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|error| format!("AnkiConnectへの送信に失敗しました: {error}"))?;
+
+    let mut response = Vec::new();
+    stream
+        .read_to_end(&mut response)
+        .map_err(|error| format!("AnkiConnectからの応答を受信できませんでした: {error}"))?;
+    let header_end = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or("AnkiConnectから不正なHTTP応答を受信しました。")?;
+    let headers = String::from_utf8_lossy(&response[..header_end]);
+    if !headers.starts_with("HTTP/1.1 200") && !headers.starts_with("HTTP/1.0 200") {
+        let status = headers.lines().next().unwrap_or("HTTPエラー");
+        return Err(format!("AnkiConnectがエラーを返しました: {status}"));
+    }
+    serde_json::from_slice(&response[header_end + 4..])
+        .map_err(|error| format!("AnkiConnectのJSON応答を読み取れませんでした: {error}"))
+}
+
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
@@ -1225,7 +1313,8 @@ pub fn run() {
             create_attempt,
             update_attempt,
             delete_attempt,
-            update_problem_statuses
+            update_problem_statuses,
+            invoke_anki_connect
         ])
         .build(tauri::generate_context!())
         .expect("GoalForgeの起動に失敗しました")
@@ -1301,6 +1390,9 @@ mod tests {
         transaction
             .execute_batch(include_str!("../migrations/004_attempt_number.sql"))
             .expect("migration 004");
+        transaction
+            .execute_batch(include_str!("../migrations/006_answer_text.sql"))
+            .expect("migration 006");
         transaction.commit().expect("commit migration");
 
         let after: i64 = connection
@@ -1374,12 +1466,14 @@ mod tests {
                 max_score: 1.0,
                 confidence: Some("high".into()),
                 note: None,
+                user_answer: None,
+                correct_answer: None,
                 next_review_status: None,
             },
         )
         .expect("normal attempt creation");
         assert_eq!(created.attempt_number, 5);
-        assert!(created.answered_at.is_some());
+        assert_eq!(created.answered_at, None);
         transaction.commit().expect("commit created attempt");
         let target_exists: bool = connection
             .query_row(
@@ -1416,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn new_database_applies_migration_005() {
+    fn new_database_applies_latest_migration() {
         let path = temporary_database_path("new-database");
         let connection = initialize_database(&path).expect("initialize new database");
         let version: i64 = connection
@@ -1434,14 +1528,14 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
         assert!(table_exists);
         drop(connection);
         fs::remove_file(path).expect("remove test database");
     }
 
     #[test]
-    fn existing_database_applies_migration_005_and_seeds_defaults() {
+    fn existing_database_applies_latest_migrations_and_seeds_defaults() {
         let path = temporary_database_path("existing-database");
         let connection = Connection::open(&path).expect("existing database");
         connection
@@ -1493,7 +1587,7 @@ mod tests {
             })
             .unwrap();
         assert_eq!(defaults, 3);
-        assert_eq!(version, 5);
+        assert_eq!(version, 6);
 
         connection
             .execute("DELETE FROM materials WHERE id='material-existing'", [])

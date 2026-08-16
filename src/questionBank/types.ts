@@ -31,6 +31,7 @@ export interface Problem {
   defaultMaxScore: number;
   evaluationTypeOverride?: ProblemEvaluationType;
   supplementalInfo?: string;
+  correctAnswer?: string;
   reviewStatus: ProblemReviewStatus;
   attempts: ProblemAttempt[];
 }
@@ -45,6 +46,7 @@ export interface ProblemAttempt {
   maxScore: number;
   confidence: Confidence;
   note?: string;
+  userAnswer?: string;
 }
 
 export interface PracticeRound {
@@ -66,6 +68,8 @@ export interface CreateAttemptInput {
   maxScore: number;
   confidence: Confidence;
   note?: string;
+  userAnswer?: string;
+  correctAnswer?: string;
   nextReviewStatus?: "active" | "completed";
 }
 

@@ -87,6 +87,69 @@ export function calculatePracticeRoundAccuracies(bank: QuestionBank): PracticeRo
     .filter((summary): summary is PracticeRoundAccuracy => summary.accuracyRate !== null);
 }
 
+export interface ContentLabelSummary {
+  label: string;
+  total: number;
+  answered: number;
+  correct: number;
+  partial: number;
+  incorrect: number;
+  earnedScore: number;
+  maxScore: number;
+  accuracyRate: number | null;
+  scoreRate: number | null;
+}
+
+export interface SectionContentLabelSummary {
+  sectionId: string;
+  sectionTitle: string;
+  summary: ContentLabelSummary;
+  labels: ContentLabelSummary[];
+}
+
+function summarizeProblems(label: string, problems: Problem[]): ContentLabelSummary {
+  const attempts = problems
+    .map(latestAttempt)
+    .filter((attempt): attempt is ProblemAttempt => Boolean(attempt));
+  const count = (result: ScoreResult) => attempts.filter(
+    (attempt) => deriveScoreResult(attempt.earnedScore, attempt.maxScore) === result,
+  ).length;
+  const correct = count("correct");
+  const earnedScore = attempts.reduce((sum, attempt) => sum + attempt.earnedScore, 0);
+  const maxScore = attempts.reduce((sum, attempt) => sum + attempt.maxScore, 0);
+  return {
+    label,
+    total: problems.length,
+    answered: attempts.length,
+    correct,
+    partial: count("partial"),
+    incorrect: count("incorrect"),
+    earnedScore,
+    maxScore,
+    accuracyRate: attempts.length ? correct / attempts.length : null,
+    scoreRate: maxScore ? earnedScore / maxScore : null,
+  };
+}
+
+export function calculateContentLabelSummaries(bank: QuestionBank): SectionContentLabelSummary[] {
+  return bank.sections.flatMap((section) => {
+  const groups = new Map<string, Problem[]>();
+  for (const problem of section.problems) {
+    const label = problem.title?.trim();
+    if (!label) continue;
+    groups.set(label, [...(groups.get(label) ?? []), problem]);
+  }
+
+  const labels = [...groups.entries()].map(([label, problems]) => summarizeProblems(label, problems));
+  return section.problems.length ? [{
+    sectionId: section.id,
+    sectionTitle: section.title,
+    summary: summarizeProblems("セクション合計", section.problems),
+    labels,
+  }] : [];
+  });
+}
+
 export interface PracticeRoundHistoryEntry {
   roundId: string;
   roundNumber: number;

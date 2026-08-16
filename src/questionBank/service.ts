@@ -10,8 +10,9 @@ import type {
 export class QuestionBankService {
   constructor(private readonly repository: QuestionBankRepository) {}
 
-  list() {
-    return this.repository.findAll();
+  async list() {
+    const banks = await this.repository.findAll();
+    return banks.map(sortQuestionBankSections);
   }
 
   async createBank(title: string, materialId: string) {
@@ -130,10 +131,11 @@ export class QuestionBankService {
       evaluationTypeOverride?: ProblemEvaluationType;
       defaultMaxScore: number;
       supplementalInfo?: string;
+      correctAnswer?: string;
     },
   ) {
     validateScore(0, input.defaultMaxScore);
-    if (!input.number.trim()) throw new Error("問題番号を入力してください。");
+    if (!input.number.trim()) throw new Error("教材上の番号を入力してください。");
     return this.repository.save({
       ...bank,
       sections: bank.sections.map((section) => {
@@ -152,10 +154,53 @@ export class QuestionBankService {
               evaluationTypeOverride: input.evaluationTypeOverride,
               defaultMaxScore: input.defaultMaxScore,
               supplementalInfo: input.supplementalInfo?.trim() || undefined,
+              correctAnswer: input.correctAnswer?.trim() || undefined,
             },
           ].sort((a, b) => a.order - b.order),
         };
       }),
+    });
+  }
+
+  updateProblemsBulk(
+    bank: QuestionBank,
+    sectionId: string,
+    updates: Array<{
+      id: string;
+      number: string;
+      title?: string;
+      evaluationTypeOverride?: ProblemEvaluationType;
+      defaultMaxScore: number;
+      correctAnswer?: string;
+    }>,
+  ) {
+    const updateMap = new Map(updates.map((update) => [update.id, update]));
+    if (updates.some((update) => !update.number.trim())) {
+      throw new Error("教材上の番号を入力してください。");
+    }
+    updates.forEach((update) => validateScore(0, update.defaultMaxScore));
+    return this.repository.save({
+      ...bank,
+      sections: bank.sections.map((section) => (
+        section.id === sectionId
+          ? {
+              ...section,
+              problems: section.problems.map((problem) => {
+                const update = updateMap.get(problem.id);
+                return update
+                  ? {
+                      ...problem,
+                      number: update.number.trim(),
+                      title: update.title?.trim() || undefined,
+                      evaluationTypeOverride: update.evaluationTypeOverride,
+                      defaultMaxScore: update.defaultMaxScore,
+                      correctAnswer: update.correctAnswer?.trim() || undefined,
+                    }
+                  : problem;
+              }),
+            }
+          : section
+      )),
     });
   }
 
@@ -169,18 +214,20 @@ export class QuestionBankService {
   }
 
   recordAttempt(input: CreateAttemptInput) {
-    validateScore(input.earnedScore, input.maxScore);
+    const normalized = applyAutomaticScoring(input);
+    validateScore(normalized.earnedScore, normalized.maxScore);
     return this.repository.createAttempt({
-      ...input,
+      ...normalized,
       id: input.id ?? crypto.randomUUID(),
-      answeredAt: input.answeredAt ?? new Date().toISOString(),
+      answeredAt: input.answeredAt === undefined ? new Date().toISOString() : input.answeredAt,
       note: input.note?.trim() || undefined,
     });
   }
 
   updateAttempt(id: string, input: CreateAttemptInput) {
-    validateScore(input.earnedScore, input.maxScore);
-    return this.repository.updateAttempt(id, input);
+    const normalized = applyAutomaticScoring(input);
+    validateScore(normalized.earnedScore, normalized.maxScore);
+    return this.repository.updateAttempt(id, normalized);
   }
 
   deleteAttempt(id: string) {
@@ -195,6 +242,42 @@ export class QuestionBankService {
   completeRound(roundId: string) {
     return this.repository.completeRound(roundId);
   }
+}
+
+export function normalizeAnswer(value?: string) {
+  return value?.trim() ?? "";
+}
+
+export function scoreAnswer(userAnswer: string, correctAnswer: string, maxScore: number) {
+  return normalizeAnswer(userAnswer) === normalizeAnswer(correctAnswer) ? maxScore : 0;
+}
+
+function applyAutomaticScoring(input: CreateAttemptInput): CreateAttemptInput {
+  if (input.userAnswer === undefined || input.correctAnswer === undefined) return input;
+  const userAnswer = normalizeAnswer(input.userAnswer);
+  const correctAnswer = normalizeAnswer(input.correctAnswer);
+  if (!userAnswer || !correctAnswer) return { ...input, userAnswer: userAnswer || undefined };
+  return {
+    ...input,
+    userAnswer,
+    earnedScore: scoreAnswer(userAnswer, correctAnswer, input.maxScore),
+  };
+}
+
+const sectionTitleCollator = new Intl.Collator("ja", {
+  numeric: true,
+  sensitivity: "base",
+});
+
+export function sortQuestionBankSections(bank: QuestionBank): QuestionBank {
+  return {
+    ...bank,
+    sections: [...bank.sections].sort((left, right) => (
+      sectionTitleCollator.compare(left.title, right.title)
+      || left.order - right.order
+      || left.id.localeCompare(right.id)
+    )),
+  };
 }
 
 export function validateScore(earnedScore: number, maxScore: number) {

@@ -29,9 +29,9 @@ const bank: QuestionBank = {
     evaluationType: "mixed", isMockExamSection: false,
     problems: [
       {
-        id: "p1", sectionId: "section-1", number: "1", order: 0, defaultMaxScore: 2,
+        id: "p1", sectionId: "section-1", number: "1", title: "語彙", correctAnswer: "A", order: 0, defaultMaxScore: 2,
         reviewStatus: "completed", attempts: [
-          { id: "a2", problemId: "p1", roundId: "round-2", answeredAt: "2026-08-02T00:00:00Z", attemptNumber: 2, earnedScore: 2, maxScore: 2, confidence: "high", note: "理解した" },
+          { id: "a2", problemId: "p1", roundId: "round-2", answeredAt: "2026-08-02T00:00:00Z", attemptNumber: 2, earnedScore: 2, maxScore: 2, confidence: "high", note: "理解した", userAnswer: "A" },
           { id: "a1", problemId: "p1", roundId: "round-1", answeredAt: "2026-08-01T00:00:00Z", attemptNumber: 1, earnedScore: 1, maxScore: 2, confidence: "low" },
         ],
       },
@@ -42,7 +42,7 @@ const bank: QuestionBank = {
 
 test("builds a fixed, rounded export from actual learning history", () => {
   const result = buildLearningHistoryExport(bank, goal, plan, "2026-08-08T01:00:00.000Z");
-  assert.equal(result.exportVersion, "1.0");
+  assert.equal(result.exportVersion, "1.1");
   assert.deepEqual(result.resource.progress, { current: 20, target: 80, unit: "pages", percent: 25 });
   assert.equal(result.summary.totalAttempts, 2);
   assert.equal(result.summary.uniqueProblemsAttempted, 1);
@@ -55,6 +55,8 @@ test("builds a fixed, rounded export from actual learning history", () => {
   assert.deepEqual(result.summary.byRound.map((item) => item.round), [1, 2]);
   assert.equal(result.problems[0].latestResult?.round, 2);
   assert.equal(result.problems[0].latestResult?.memo, "理解した");
+  assert.equal(result.problems[0].correctAnswer, "A");
+  assert.equal(result.problems[0].latestResult?.userAnswer, "A");
   assert.equal("memo" in result.problems[0].history[0], false);
   assert.equal(result.problems[1].latestResult, null);
 });
@@ -79,7 +81,7 @@ test("builds one CSV row per attempt and keeps unanswered problems", () => {
   const lines = csv.split("\r\n");
   assert.equal(lines.length, 4);
   assert.match(lines[0], /^"exportVersion","exportedAt","goalId"/);
-  assert.match(lines[1], /"p1","第1章","1","completed","1","2026-08-01T00:00:00Z","1","1","2","50","partial","false","low",""$/);
-  assert.match(lines[2], /"p1","第1章","1","completed","2","2026-08-02T00:00:00Z","2","2","2","100","correct","true","high","理解した"$/);
-  assert.match(lines[3], /"p2","第1章","2","active","","","","","","","","","",""$/);
+  assert.match(lines[1], /"p1","第1章","1","語彙","A","completed","1","2026-08-01T00:00:00Z","1","","1","2","50","partial","false","low",""$/);
+  assert.match(lines[2], /"p1","第1章","1","語彙","A","completed","2","2026-08-02T00:00:00Z","2","A","2","2","100","correct","true","high","理解した"$/);
+  assert.match(lines[3], /"p2","第1章","2","","","active","","","","","","","","","","",""$/);
 });

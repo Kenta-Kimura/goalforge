@@ -22,6 +22,7 @@ export interface Goal {
   examDate?: string;
   skillIds: string[];
   collectionIds: string[];
+  ankiDeckNames?: string[];
 }
 
 export interface Skill {

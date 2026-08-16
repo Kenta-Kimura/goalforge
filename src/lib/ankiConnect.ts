@@ -1,4 +1,5 @@
 import type { AnkiCardSummary, AnkiNoteSummary, AnkiReviewEntry, AnkiSyncData } from "../types";
+import { invokeDesktop, isTauriRuntime } from "./tauri";
 
 const ANKI_CONNECT_URL = "http://127.0.0.1:8765";
 
@@ -7,23 +8,47 @@ interface AnkiResponse<T> {
   error: string | null;
 }
 
-async function invoke<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
-  const response = await fetch(ANKI_CONNECT_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ action, version: 6, params }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`AnkiConnect HTTP ${response.status}`);
-  }
-
-  const payload = (await response.json()) as AnkiResponse<T>;
+export async function invokeAnki<T>(action: string, params: Record<string, unknown> = {}): Promise<T> {
+  const payload = isTauriRuntime()
+    ? await invokeDesktop<AnkiResponse<T>>("invoke_anki_connect", { action, params })
+    : await fetch(ANKI_CONNECT_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, version: 6, params }),
+      }).then(async (response) => {
+        if (!response.ok) throw new Error(`AnkiConnect HTTP ${response.status}`);
+        return response.json() as Promise<AnkiResponse<T>>;
+      });
   if (payload.error) {
     throw new Error(payload.error);
   }
 
   return payload.result;
+}
+
+export async function requestAnkiPermission() {
+  const permission = await invokeAnki<{
+    permission: "granted" | "denied";
+    requireApikey?: boolean;
+    version?: number;
+  }>("requestPermission");
+  if (permission.permission !== "granted") {
+    throw new Error("AnkiConnectへのアクセスが許可されませんでした。Ankiに表示される確認画面で許可してください。");
+  }
+  if (permission.requireApikey) {
+    throw new Error("AnkiConnectにAPIキーが設定されています。GoalForgeは現在APIキー認証に対応していません。");
+  }
+  return permission;
+}
+
+export interface AnkiMultiAction {
+  action: string;
+  params?: Record<string, unknown>;
+}
+
+export async function invokeAnkiMulti<T>(actions: AnkiMultiAction[]): Promise<T[]> {
+  if (!actions.length) return [];
+  return invokeAnki<T[]>("multi", { actions });
 }
 
 function chooseTargetDeck(deckNames: string[]) {
@@ -69,7 +94,7 @@ async function getReviewHistories(cardIds: number[]) {
   const histories: Record<string, unknown[]> = {};
 
   for (const cardChunk of chunks(cardIds, 500)) {
-    const chunkHistories = await invoke<Record<string, unknown[]>>("getReviewsOfCards", {
+    const chunkHistories = await invokeAnki<Record<string, unknown[]>>("getReviewsOfCards", {
       cards: cardChunk,
     });
     Object.assign(histories, chunkHistories);
@@ -79,21 +104,22 @@ async function getReviewHistories(cardIds: number[]) {
 }
 
 export async function syncAnki(): Promise<AnkiSyncData> {
-  const deckNames = await invoke<string[]>("deckNames");
+  await requestAnkiPermission();
+  const deckNames = await invokeAnki<string[]>("deckNames");
   const targetDeckName = chooseTargetDeck(deckNames);
   const deckQuery = targetDeckName ? `deck:"${targetDeckName.replaceAll('"', '\\"')}"` : "";
   const targetCardIds = targetDeckName
-    ? await invoke<number[]>("findCards", { query: deckQuery })
+    ? await invokeAnki<number[]>("findCards", { query: deckQuery })
     : [];
   const targetReviewCardIds = targetDeckName
-    ? await invoke<number[]>("findCards", { query: `${deckQuery} rated:1` })
+    ? await invokeAnki<number[]>("findCards", { query: `${deckQuery} rated:1` })
     : [];
   const targetNewCardIds = targetDeckName
-    ? await invoke<number[]>("findCards", { query: `${deckQuery} added:1` })
+    ? await invokeAnki<number[]>("findCards", { query: `${deckQuery} added:1` })
     : [];
   const cardSampleIds = targetCardIds.slice(0, 40);
   const cardInfo = cardSampleIds.length
-    ? await invoke<Record<string, unknown>[]>("cardsInfo", { cards: cardSampleIds })
+    ? await invokeAnki<Record<string, unknown>[]>("cardsInfo", { cards: cardSampleIds })
     : [];
   const noteIds = Array.from(
     new Set(
@@ -103,9 +129,9 @@ export async function syncAnki(): Promise<AnkiSyncData> {
     ),
   ).slice(0, 40);
   const notesInfo = noteIds.length
-    ? await invoke<Record<string, unknown>[]>("notesInfo", { notes: noteIds })
+    ? await invokeAnki<Record<string, unknown>[]>("notesInfo", { notes: noteIds })
     : [];
-  const tags = await invoke<string[]>("getTags");
+  const tags = await invokeAnki<string[]>("getTags");
   let reviewHistory: AnkiReviewEntry[] = [];
   let totalReviewCount = 0;
   let totalLearnedCardCount = 0;

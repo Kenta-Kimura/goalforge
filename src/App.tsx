@@ -11,6 +11,13 @@ import { ExerciseView } from "./questionBank/QuestionBankView";
 import { MaterialMasterView } from "./questionBank/MaterialMasterView";
 import { syncAnki } from "./lib/ankiConnect";
 import {
+  buildAnkiOverview,
+  buildDeckAnkiDetail,
+  buildGoalAnkiDetail,
+  downloadAnalysisJson,
+  type AnkiAnalysisProgress,
+} from "./lib/ankiAnalysis";
+import {
   calculateLevel,
   calculateTotalXp,
   calculateXpBreakdown,
@@ -316,11 +323,9 @@ function App() {
       });
       setSyncStatus("success");
       setSyncMessage("AnkiConnectとの同期が完了しました。");
-    } catch {
+    } catch (error) {
       setSyncStatus("error");
-      setSyncMessage(
-        "Ankiが起動していません。Mac版Ankiを起動してから再同期してください。",
-      );
+      setSyncMessage(`AnkiConnectに接続できませんでした: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -420,6 +425,15 @@ function App() {
       setSelectedGoalId(fallback?.id ?? "chuken-2");
       setActiveView("dashboard");
     }
+  }
+
+  function handleGoalDecksChange(deckNames: string[]) {
+    setState((current) => ({
+      ...current,
+      goals: current.goals.map((item) =>
+        item.id === goal.id ? { ...item, ankiDeckNames: deckNames } : item,
+      ),
+    }));
   }
 
   return (
@@ -527,7 +541,9 @@ function App() {
             status={syncStatus}
             message={syncMessage}
             anki={state.anki}
+            goal={goal}
             onSync={handleAnkiSync}
+            onGoalDecksChange={handleGoalDecksChange}
           />
         )}
 
@@ -1895,13 +1911,99 @@ function SyncView({
   status,
   message,
   anki,
+  goal,
   onSync,
+  onGoalDecksChange,
 }: {
   status: SyncStatus;
   message: string;
   anki: AppState["anki"];
+  goal: AppState["goals"][number];
   onSync: () => void;
+  onGoalDecksChange: (deckNames: string[]) => void;
 }) {
+  const [exportMessage, setExportMessage] = useState("");
+  const [exporting, setExporting] = useState<"overview" | "goal" | "deck" | null>(null);
+  const [analysisProgress, setAnalysisProgress] = useState<AnkiAnalysisProgress | null>(null);
+  const [standaloneDeckNames, setStandaloneDeckNames] = useState<string[]>(
+    anki.targetDeckName ? [anki.targetDeckName] : [],
+  );
+  const linkedDecks = goal.ankiDeckNames ?? [];
+
+  useEffect(() => {
+    const availableSelections = standaloneDeckNames.filter((name) => anki.deckNames.includes(name));
+    if (availableSelections.length === standaloneDeckNames.length) return;
+    setStandaloneDeckNames(availableSelections);
+  }, [anki.deckNames, standaloneDeckNames]);
+
+  function toggleDeck(deckName: string) {
+    onGoalDecksChange(
+      linkedDecks.includes(deckName)
+        ? linkedDecks.filter((name) => name !== deckName)
+        : [...linkedDecks, deckName],
+    );
+  }
+
+  function toggleStandaloneDeck(deckName: string) {
+    setStandaloneDeckNames((current) => (
+      current.includes(deckName)
+        ? current.filter((name) => name !== deckName)
+        : [...current, deckName]
+    ));
+  }
+
+  async function exportOverview() {
+    setExporting("overview");
+    setAnalysisProgress(null);
+    setExportMessage("Ankiから全デッキの最新状態を取得しています...");
+    try {
+      const analysis = await buildAnkiOverview(setAnalysisProgress);
+      downloadAnalysisJson(analysis, `goalforge-anki-overview-${new Date().toLocaleDateString("en-CA")}.json`);
+      setExportMessage("全デッキ分析JSONを出力しました。");
+    } catch (error) {
+      setExportMessage(`出力できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function exportGoalDetail() {
+    setExporting("goal");
+    setAnalysisProgress(null);
+    setExportMessage("対象デッキのカード詳細を取得しています...");
+    try {
+      const analysis = await buildGoalAnkiDetail(goal, setAnalysisProgress);
+      downloadAnalysisJson(analysis, `goalforge-anki-goal-${goal.id}-${new Date().toLocaleDateString("en-CA")}.json`);
+      setExportMessage("この目標の詳細分析JSONを出力しました。");
+    } catch (error) {
+      setExportMessage(`出力できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
+  async function exportStandaloneDeckDetail() {
+    if (!standaloneDeckNames.length) return;
+    setExporting("deck");
+    setAnalysisProgress(null);
+    setExportMessage(`選択した${standaloneDeckNames.length}件のデッキからカード詳細を取得しています...`);
+    try {
+      const analysis = await buildDeckAnkiDetail(standaloneDeckNames, setAnalysisProgress);
+      const safeDeckName = standaloneDeckNames.length === 1
+        ? standaloneDeckNames[0].replace(/[\\/:*?"<>|\s]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80)
+        : `${standaloneDeckNames.length}-decks`;
+      downloadAnalysisJson(
+        analysis,
+        `goalforge-anki-deck-${safeDeckName || "deck"}-${new Date().toLocaleDateString("en-CA")}.json`,
+      );
+      setExportMessage("選択したデッキの詳細分析JSONを出力しました。");
+    } catch (error) {
+      setExportMessage(`出力できませんでした: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setExporting(null);
+    }
+  }
+
   return (
     <section className="sync-layout">
       <div className="panel sync-main">
@@ -1967,6 +2069,81 @@ function SyncView({
           <strong>レビュー履歴</strong>
           <p>{anki.reviewHistory.length}件のカード履歴サンプル</p>
         </div>
+      </div>
+
+      <div className="panel data-panel">
+        <h2>Anki分析JSON</h2>
+        <p>出力時にAnkiConnectから最新状態を取得します。全デッキ分析にはカード本文を含めません。</p>
+        <div className="data-section">
+          <strong>{goal.title} に紐付けるデッキ</strong>
+          {anki.deckNames.length ? (
+            <div className="deck-picker">
+              {anki.deckNames.map((deckName) => (
+                <label key={deckName}>
+                  <input
+                    checked={linkedDecks.includes(deckName)}
+                    onChange={() => toggleDeck(deckName)}
+                    type="checkbox"
+                  />
+                  <span>{deckName}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p>先に「Ankiと同期」を実行してデッキ一覧を取得してください。</p>
+          )}
+        </div>
+        <div className="action-row">
+          <button className="secondary-button" disabled={exporting !== null} onClick={() => void exportOverview()} type="button">
+            {exporting === "overview" ? "出力中..." : "全デッキ分析JSONを出力"}
+          </button>
+          <button className="primary-button" disabled={exporting !== null || !linkedDecks.length} onClick={() => void exportGoalDetail()} type="button">
+            {exporting === "goal" ? "出力中..." : "この目標の詳細分析JSONを出力"}
+          </button>
+        </div>
+        <div className="data-section standalone-deck-export">
+          <strong>目標に紐づけないデッキ詳細分析</strong>
+          <p>現在の目標設定を変更せず、選択した複数デッキを1つのJSONへ詳細出力します。</p>
+          {anki.deckNames.length ? (
+            <div className="deck-picker standalone-deck-picker">
+              {anki.deckNames.map((deckName) => (
+                <label key={deckName}>
+                  <input
+                    checked={standaloneDeckNames.includes(deckName)}
+                    disabled={exporting !== null}
+                    onChange={() => toggleStandaloneDeck(deckName)}
+                    type="checkbox"
+                  />
+                  <span>{deckName}</span>
+                </label>
+              ))}
+            </div>
+          ) : (
+            <p>先に「Ankiと同期」を実行してデッキ一覧を取得してください。</p>
+          )}
+          <small>{standaloneDeckNames.length}件選択中</small>
+          <button
+            className="secondary-button"
+            disabled={exporting !== null || !standaloneDeckNames.length}
+            onClick={() => void exportStandaloneDeckDetail()}
+            type="button"
+          >
+            {exporting === "deck" ? "出力中..." : "選択したデッキの詳細分析JSONを出力"}
+          </button>
+        </div>
+        {analysisProgress && (
+          <div className="analysis-progress" aria-live="polite">
+            <div>
+              <strong>{analysisProgress.message}</strong>
+              <span>{analysisProgress.percent}%</span>
+            </div>
+            <progress max="100" value={analysisProgress.percent} />
+            {analysisProgress.total > 1 && (
+              <small>{analysisProgress.completed} / {analysisProgress.total}</small>
+            )}
+          </div>
+        )}
+        {exportMessage && <div aria-live="polite" className="sync-message">{exportMessage}</div>}
       </div>
     </section>
   );

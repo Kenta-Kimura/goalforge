@@ -14,6 +14,7 @@
   --ink: #17211a;
   --muted: #647068;
   --line: #dfe5dc;
+  --background: #f7f8f4;
   --surface: #ffffff;
   --soft: #edf3eb;
   --shadow: 0 18px 45px rgba(32, 48, 36, 0.09);
@@ -23,6 +24,13 @@
 .question-bank-layout {
   display: grid;
   gap: 16px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.problem-list {
+  min-width: 0;
+  max-width: 100%;
 }
 
 .question-bank-toolbar,
@@ -161,6 +169,19 @@
   gap: 16px;
 }
 
+.answer-text-fields {
+  display: grid;
+  gap: 8px;
+}
+
+.answer-text-fields label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+
 .material-selector-card label {
   display: grid;
   max-width: 480px;
@@ -190,6 +211,33 @@
 .master-section .panel-heading {
   padding: 18px 20px;
   background: var(--soft);
+}
+
+.master-section > summary {
+  cursor: pointer;
+  list-style: none;
+}
+
+.master-section > summary::-webkit-details-marker {
+  display: none;
+}
+
+.master-section-toggle {
+  color: var(--jade-dark);
+  font-weight: 700;
+}
+
+.master-section[open] .master-section-toggle {
+  font-size: 0;
+}
+
+.master-section[open] .master-section-toggle::after {
+  content: "閉じる";
+  font-size: 0.9rem;
+}
+
+.master-section-body {
+  padding-top: 1px;
 }
 
 .master-problem-table td:nth-child(2),
@@ -507,18 +555,93 @@
   overflow: hidden;
 }
 
-.question-section summary {
+.question-section-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 10px 0;
+  background: var(--background);
+}
+
+.question-section-tabs button {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  flex: 0 0 190px;
+  gap: 8px;
+  width: 190px;
+  min-width: 190px;
+  min-height: 108px;
+  padding: 12px;
+  text-align: left;
+}
+
+.question-section-tabs strong {
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.question-section-tabs button.selected {
+  border-color: var(--jade);
+  background: var(--soft);
+  color: var(--jade-dark);
+  box-shadow: inset 0 0 0 1px var(--jade);
+}
+
+.question-section-tabs small {
+  color: var(--muted);
+}
+
+.question-section-heading {
   display: flex;
   justify-content: space-between;
   gap: 16px;
   padding: 18px 20px;
-  cursor: pointer;
   background: var(--soft);
 }
 
-.question-section summary small {
+.question-section-heading small {
   margin-left: 8px;
   color: var(--muted);
+}
+
+.content-label-group-row th {
+  padding: 0;
+  background: var(--soft);
+}
+
+.content-label-group-row button {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 11px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  text-align: left;
+}
+
+.content-label-group-row button::before {
+  content: "▾";
+  color: var(--jade-dark);
+}
+
+.content-label-group-row button[aria-expanded="false"]::before {
+  content: "▸";
+}
+
+.content-label-group-row button span {
+  flex: 1;
+  font-weight: 700;
+}
+
+.content-label-group-row button small {
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .add-problems-form {
@@ -653,6 +776,90 @@
   font-size: 0.92rem;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
+}
+
+.content-label-summary h2 {
+  margin: 0.2rem 0 0;
+}
+
+.content-label-summary > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  cursor: pointer;
+  list-style: none;
+}
+
+.content-label-summary > summary::-webkit-details-marker {
+  display: none;
+}
+
+.content-label-summary-toggle {
+  color: var(--jade-dark);
+  font-weight: 700;
+}
+
+.content-label-summary[open] .content-label-summary-toggle {
+  font-size: 0;
+}
+
+.content-label-summary[open] .content-label-summary-toggle::after {
+  content: "閉じる";
+  font-size: 0.9rem;
+}
+
+.content-label-summary-body {
+  margin-top: 1rem;
+}
+
+.content-label-section + .content-label-section {
+  margin-top: 1rem;
+}
+
+.content-label-section-heading {
+  padding: 0.7rem 0.8rem;
+  border-radius: 8px 8px 0 0;
+  background: var(--soft);
+}
+
+.content-label-section-heading h3 {
+  margin: 0;
+}
+
+.content-label-section-heading > div {
+  display: flex;
+  gap: 0.4rem 1rem;
+  flex-wrap: wrap;
+  margin-top: 0.45rem;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.content-label-summary-table-wrap {
+  overflow-x: auto;
+}
+
+.content-label-summary-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.content-label-summary-table th,
+.content-label-summary-table td {
+  padding: 0.7rem 0.8rem;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  white-space: nowrap;
+}
+
+.content-label-summary-table th:first-child {
+  white-space: normal;
+}
+
+.content-label-summary-table tbody tr:last-child > * {
+  border-bottom: 0;
 }
 
 .custom-metric-overall-summary h2 {
@@ -886,6 +1093,95 @@
   box-shadow: 0 24px 80px rgb(0 0 0 / 28%);
 }
 
+.bulk-problem-label-editor {
+  width: min(860px, 100%);
+}
+
+.bulk-edit-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bulk-shared-settings {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--soft);
+}
+
+.bulk-shared-settings label:first-child {
+  grid-column: 1 / -1;
+}
+
+.bulk-shared-settings label {
+  display: grid;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.bulk-shared-settings label > span {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+.bulk-shared-settings input,
+.bulk-shared-settings select {
+  width: 100%;
+  min-width: 0;
+}
+
+.bulk-problem-table-wrap {
+  max-height: 52vh;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.bulk-problem-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+.bulk-problem-table input,
+.bulk-problem-table select {
+  width: 100%;
+  min-width: 0;
+}
+
+.bulk-problem-table td:nth-child(2) {
+  width: 20%;
+}
+
+.bulk-problem-table th:first-child,
+.bulk-problem-table td:first-child {
+  width: 1%;
+  text-align: center;
+}
+
+.bulk-problem-table th:first-child input,
+.bulk-problem-table td:first-child input {
+  width: auto;
+}
+
+.bulk-problem-table td:last-child {
+  width: 1%;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .bulk-shared-settings {
+    grid-template-columns: 1fr;
+  }
+}
+
 .modal-panel h2 {
   margin: 0 52px 0 0;
 }
@@ -942,8 +1238,14 @@
   position: relative;
   display: inline-flex;
   padding-bottom: 5px;
+  border: 0;
   border-radius: 50%;
+  background: transparent;
   outline: none;
+}
+
+.history-score[aria-disabled="false"] {
+  cursor: pointer;
 }
 
 .history-score-missing .score-mark {
@@ -1130,6 +1432,7 @@ body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
 }
 
 button,
@@ -1246,6 +1549,8 @@ button {
   margin-left: 248px;
   padding: 28px;
   min-width: 0;
+  width: calc(100% - 248px);
+  max-width: calc(100% - 248px);
 }
 
 .sticky-header {
@@ -2630,6 +2935,8 @@ dl {
 
   .main {
     margin-left: 0;
+    width: 100%;
+    max-width: 100%;
   }
 
   .nav-list {
@@ -2724,4 +3031,59 @@ dl {
   .resource-actions {
     justify-content: flex-start;
   }
+}
+.deck-picker {
+  display: grid;
+  gap: 0.55rem;
+  max-height: 15rem;
+  margin-top: 0.75rem;
+  overflow: auto;
+}
+
+.deck-picker label {
+  align-items: flex-start;
+  display: flex;
+  gap: 0.55rem;
+}
+
+.deck-picker input {
+  margin-top: 0.2rem;
+}
+
+.analysis-progress {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 1rem;
+}
+
+.analysis-progress > div {
+  align-items: center;
+  display: flex;
+  gap: 1rem;
+  justify-content: space-between;
+}
+
+.analysis-progress progress {
+  accent-color: var(--jade);
+  height: 0.8rem;
+  width: 100%;
+}
+
+.analysis-progress small {
+  color: var(--muted);
+  text-align: right;
+}
+
+.standalone-deck-export {
+  display: grid;
+  gap: 0.65rem;
+  margin-top: 1rem;
+}
+
+.standalone-deck-export button {
+  justify-self: start;
+}
+
+.standalone-deck-picker {
+  max-height: 18rem;
 }

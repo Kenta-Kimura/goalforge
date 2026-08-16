@@ -9,7 +9,7 @@ import {
 } from "./QuestionBankView";
 import { SqliteQuestionBankRepository } from "./repository";
 import { QuestionBankService } from "./service";
-import type { EvaluationType, Problem, QuestionBank, QuestionSection } from "./types";
+import type { EvaluationType, Problem, ProblemEvaluationType, QuestionBank, QuestionSection } from "./types";
 
 const service = new QuestionBankService(new SqliteQuestionBankRepository());
 
@@ -31,6 +31,7 @@ export function MaterialMasterView({
   const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(isTauriRuntime());
   const [editingProblem, setEditingProblem] = useState<Problem | null>(null);
+  const [bulkEditingSection, setBulkEditingSection] = useState<QuestionSection | null>(null);
   const [deletingProblem, setDeletingProblem] = useState<Problem | null>(null);
   const [editingSection, setEditingSection] = useState<QuestionSection | null>(null);
   const [deletingSection, setDeletingSection] = useState<QuestionSection | null>(null);
@@ -131,39 +132,44 @@ export function MaterialMasterView({
           <SectionCreateForm onCreate={(input) => run(() => service.addSection(material, input), "セクションを追加しました。", material.id)} />
           {material.sections.length === 0 && <div className="panel empty-state"><p>セクションを追加すると問題を登録できます。</p></div>}
           {material.sections.map((section) => (
-            <section className="panel master-section" key={section.id}>
-              <div className="panel-heading">
+            <details className="panel master-section" key={section.id}>
+              <summary className="panel-heading">
                 <div>
                   <span className="eyebrow">{evaluationLabels[section.evaluationType]}{section.isMockExamSection ? "・模試対象" : ""}</span>
                   <h3>{section.title}</h3>
+                  <small>{section.problems.length}問</small>
                 </div>
                 <div className="master-actions">
-                  <button onClick={() => setEditingSection(section)}>編集</button>
-                  <button className="danger-button" onClick={() => setDeletingSection(section)}>削除</button>
+                  <span className="master-section-toggle" aria-hidden="true">展開</span>
+                  <button disabled={section.problems.length === 0} onClick={(event) => { event.preventDefault(); setBulkEditingSection(section); }}>問題情報を一括編集</button>
+                  <button onClick={(event) => { event.preventDefault(); setEditingSection(section); }}>編集</button>
+                  <button className="danger-button" onClick={(event) => { event.preventDefault(); setDeletingSection(section); }}>削除</button>
+                </div>
+              </summary>
+              <div className="master-section-body">
+                <ProblemCreateForm sectionId={section.id} onAdd={(sectionId, count, maxScore) =>
+                  run(() => service.addProblems(material, sectionId, { count, defaultMaxScore: maxScore }), `${count}問追加しました。`, material.id)
+                } />
+                <div className="problem-table-wrap">
+                  <table className="problem-table master-problem-table">
+                    <thead><tr><th>教材上の番号</th><th>内容ラベル（任意）</th><th>問題形式</th><th>配点</th><th>補足情報</th><th>操作</th></tr></thead>
+                    <tbody>
+                      {section.problems.length === 0 && <tr><td colSpan={6}>問題はまだありません。</td></tr>}
+                      {section.problems.map((problem) => (
+                        <tr key={problem.id}>
+                          <td>{problem.number}</td>
+                          <td>{problem.title || "—"}</td>
+                          <td>{evaluationLabels[problem.evaluationTypeOverride || section.evaluationType]}</td>
+                          <td>{problem.defaultMaxScore}点</td>
+                          <td>{problem.supplementalInfo || "—"}</td>
+                          <td><button onClick={() => setEditingProblem(problem)}>編集</button><button className="danger-button" onClick={() => setDeletingProblem(problem)}>削除</button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
               </div>
-              <ProblemCreateForm sectionId={section.id} onAdd={(sectionId, count, maxScore) =>
-                run(() => service.addProblems(material, sectionId, { count, defaultMaxScore: maxScore }), `${count}問追加しました。`, material.id)
-              } />
-              <div className="problem-table-wrap">
-                <table className="problem-table master-problem-table">
-                  <thead><tr><th>問題番号</th><th>問題名</th><th>問題形式</th><th>配点</th><th>補足情報</th><th>操作</th></tr></thead>
-                  <tbody>
-                    {section.problems.length === 0 && <tr><td colSpan={6}>問題はまだありません。</td></tr>}
-                    {section.problems.map((problem) => (
-                      <tr key={problem.id}>
-                        <td>No.{problem.number}</td>
-                        <td>{problem.title || "—"}</td>
-                        <td>{evaluationLabels[problem.evaluationTypeOverride || section.evaluationType]}</td>
-                        <td>{problem.defaultMaxScore}点</td>
-                        <td>{problem.supplementalInfo || "—"}</td>
-                        <td><button onClick={() => setEditingProblem(problem)}>編集</button><button className="danger-button" onClick={() => setDeletingProblem(problem)}>削除</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </section>
+            </details>
           ))}
         </>
       )}
@@ -188,11 +194,248 @@ export function MaterialMasterView({
         await run(() => service.updateProblem(material, editingProblem.id, input), "問題を更新しました。", material.id);
         setEditingProblem(null);
       }} /></ModalBackdrop>}
+      {material && bulkEditingSection && <ModalBackdrop onClose={() => setBulkEditingSection(null)}><BulkProblemLabelEditor section={bulkEditingSection} onCancel={() => setBulkEditingSection(null)} onSave={async (updates) => {
+        await run(() => service.updateProblemsBulk(material, bulkEditingSection.id, updates), "問題情報を一括更新しました。", material.id);
+        setBulkEditingSection(null);
+      }} /></ModalBackdrop>}
       {deletingProblem && <ModalBackdrop onClose={() => setDeletingProblem(null)}><DeleteProblemPanel problem={deletingProblem} onCancel={() => setDeletingProblem(null)} onDelete={async () => {
         await run(() => service.deleteProblem(deletingProblem.id), "問題を削除しました。", material?.id);
         setDeletingProblem(null);
       }} /></ModalBackdrop>}
     </section>
+  );
+}
+
+export interface ProblemLabelDraft {
+  id: string;
+  number: string;
+  title: string;
+  evaluationTypeOverride?: ProblemEvaluationType;
+  defaultMaxScore: number;
+  correctAnswer: string;
+}
+
+export function wrapProblemNumbers(drafts: ProblemLabelDraft[]) {
+  return drafts.map((draft) => ({
+    ...draft,
+    number: /^\(.*\)$/.test(draft.number.trim()) ? draft.number.trim() : `(${draft.number.trim()})`,
+  }));
+}
+
+export function removeProblemNumberFromLabels(drafts: ProblemLabelDraft[]) {
+  return drafts.map((draft) => ({
+    ...draft,
+    title: removeNumberNotation(draft.title, draft.number),
+  }));
+}
+
+export function copyProblemLabelToFollowing(drafts: ProblemLabelDraft[], sourceId: string) {
+  const sourceIndex = drafts.findIndex((draft) => draft.id === sourceId);
+  if (sourceIndex < 0) return drafts;
+  const sourceTitle = drafts[sourceIndex].title;
+  return drafts.map((draft, index) => index > sourceIndex ? { ...draft, title: sourceTitle } : draft);
+}
+
+export function applyProblemFormatToAll(
+  drafts: ProblemLabelDraft[],
+  evaluationTypeOverride?: ProblemEvaluationType,
+) {
+  return drafts.map((draft) => ({ ...draft, evaluationTypeOverride }));
+}
+
+export function applyProblemMaxScoreToAll(drafts: ProblemLabelDraft[], defaultMaxScore: number) {
+  return drafts.map((draft) => ({ ...draft, defaultMaxScore }));
+}
+
+export function applyProblemLabelToSelected(
+  drafts: ProblemLabelDraft[],
+  selectedIds: Set<string>,
+  title: string,
+) {
+  return drafts.map((draft) => selectedIds.has(draft.id) ? { ...draft, title } : draft);
+}
+
+export function renumberProblemsByLabel(drafts: ProblemLabelDraft[]) {
+  let previousLabel: string | undefined;
+  let numberInLabel = 0;
+  return drafts.map((draft) => {
+    const label = draft.title.trim();
+    numberInLabel = previousLabel === label ? numberInLabel + 1 : 1;
+    previousLabel = label;
+    return {
+      ...draft,
+      number: formatRenumberedProblemNumber(draft.number, numberInLabel),
+    };
+  });
+}
+
+function formatRenumberedProblemNumber(current: string, number: number) {
+  if (isCircledNumber(current.trim())) return circledNumber(number) ?? String(number);
+  return /\d+/.test(current) ? current.replace(/\d+/, String(number)) : String(number);
+}
+
+function isCircledNumber(value: string) {
+  return [...value].length === 1 && circledNumberValue(value) !== null;
+}
+
+function circledNumberValue(value: string) {
+  const code = value.codePointAt(0);
+  if (code === undefined) return null;
+  if (code >= 0x2460 && code <= 0x2473) return code - 0x2460 + 1;
+  if (code >= 0x3251 && code <= 0x325f) return code - 0x3251 + 21;
+  if (code >= 0x32b1 && code <= 0x32bf) return code - 0x32b1 + 36;
+  return null;
+}
+
+function circledNumber(number: number) {
+  if (number >= 1 && number <= 20) return String.fromCodePoint(0x2460 + number - 1);
+  if (number >= 21 && number <= 35) return String.fromCodePoint(0x3251 + number - 21);
+  if (number >= 36 && number <= 50) return String.fromCodePoint(0x32b1 + number - 36);
+  return null;
+}
+
+function removeNumberNotation(title: string, number: string) {
+  const trimmedTitle = title.trim();
+  if (!trimmedTitle) return "";
+  const digits = number.match(/\d+/)?.[0];
+  const variants = new Set([number.trim()]);
+  if (digits) {
+    variants.add(digits);
+    variants.add(`No.${digits}`);
+    variants.add(`No. ${digits}`);
+    variants.add(`問${digits}`);
+    variants.add(`(${digits})`);
+    variants.add(`（${digits}）`);
+  }
+  const alternatives = [...variants]
+    .filter(Boolean)
+    .sort((left, right) => right.length - left.length)
+    .map(escapeRegExp)
+    .join("|");
+  if (!alternatives) return trimmedTitle;
+  return trimmedTitle
+    .replace(new RegExp(`^(?:${alternatives})(?:[\\s:：・-]+|$)`, "i"), "")
+    .replace(new RegExp(`(?:[\\s:：・-]+|^)(?:${alternatives})$`, "i"), "")
+    .trim();
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+export function BulkProblemLabelEditor({
+  section,
+  onCancel,
+  onSave,
+}: {
+  section: QuestionSection;
+  onCancel: () => void;
+  onSave: (updates: ProblemLabelDraft[]) => Promise<void>;
+}) {
+  const [drafts, setDrafts] = useState<ProblemLabelDraft[]>(() => section.problems.map((problem) => ({
+    id: problem.id,
+    number: problem.number,
+    title: problem.title ?? "",
+    evaluationTypeOverride: problem.evaluationTypeOverride,
+    defaultMaxScore: problem.defaultMaxScore,
+    correctAnswer: problem.correctAnswer ?? "",
+  })));
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  const [bulkFormat, setBulkFormat] = useState<ProblemEvaluationType | "">("");
+  const [bulkMaxScore, setBulkMaxScore] = useState(section.problems[0]?.defaultMaxScore ?? 1);
+  const [bulkTitle, setBulkTitle] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  function updateDraft(id: string, field: "number" | "title" | "evaluationTypeOverride" | "defaultMaxScore" | "correctAnswer", value: string | number | undefined) {
+    setDrafts((current) => current.map((draft) => draft.id === id ? { ...draft, [field]: value } : draft));
+  }
+  return (
+    <form className="modal-panel bulk-problem-label-editor" onSubmit={async (event) => {
+      event.preventDefault();
+      if (saving) return;
+      try {
+        setSaving(true);
+        setError("");
+        await onSave(drafts);
+      } catch (cause) {
+        setError(toMessage(cause));
+        setSaving(false);
+      }
+    }}>
+      <button className="dialog-close" type="button" onClick={onCancel}>閉じる</button>
+      <div>
+        <span className="eyebrow">{section.title}</span>
+        <h2>問題情報を一括編集</h2>
+        <p className="helper-text">補助操作を適用した後、保存前に各行を確認・修正できます。</p>
+      </div>
+      <div className="bulk-edit-actions">
+        <button type="button" onClick={() => setDrafts(wrapProblemNumbers)}>番号を括弧で囲む</button>
+        <button type="button" onClick={() => setDrafts(removeProblemNumberFromLabels)}>ラベルから番号表記を削除</button>
+        <button type="button" onClick={() => setDrafts(renumberProblemsByLabel)}>ラベルごとに番号を振り直す</button>
+      </div>
+      <div className="bulk-shared-settings">
+        <label>内容ラベルを選択問題へ設定
+          <span>
+            <input value={bulkTitle} onChange={(event) => setBulkTitle(event.target.value)} placeholder="内容ラベル" />
+            <button type="button" disabled={selectedIds.size === 0} onClick={() => setDrafts((current) => applyProblemLabelToSelected(current, selectedIds, bulkTitle))}>選択した{selectedIds.size}問へ反映</button>
+          </span>
+        </label>
+        <label>問題形式を一括設定
+          <span>
+            <select value={bulkFormat} onChange={(event) => setBulkFormat(event.target.value as ProblemEvaluationType | "")}><option value="">セクション設定（{evaluationLabels[section.evaluationType]}）</option><option value="binary">正誤</option><option value="partial_score">部分点</option></select>
+            <button type="button" onClick={() => setDrafts((current) => applyProblemFormatToAll(current, bulkFormat || undefined))}>全問題へ反映</button>
+          </span>
+        </label>
+        <label>配点を一括設定
+          <span>
+            <input type="number" min="1" step="0.001" value={bulkMaxScore} onChange={(event) => setBulkMaxScore(event.target.valueAsNumber)} />
+            <button type="button" disabled={!Number.isFinite(bulkMaxScore) || bulkMaxScore < 1} onClick={() => setDrafts((current) => applyProblemMaxScoreToAll(current, bulkMaxScore))}>全問題へ反映</button>
+          </span>
+        </label>
+      </div>
+      <div className="bulk-problem-table-wrap">
+        <table className="problem-table bulk-problem-table">
+          <thead><tr><th><input type="checkbox" aria-label="すべての問題を選択" checked={drafts.length > 0 && selectedIds.size === drafts.length} onChange={(event) => setSelectedIds(event.target.checked ? new Set(drafts.map((draft) => draft.id)) : new Set())} /></th><th>教材上の番号</th><th>内容ラベル（任意）</th><th>問題形式</th><th>配点</th><th>正答（任意）</th><th>操作</th></tr></thead>
+          <tbody>
+            {drafts.map((draft, index) => (
+              <tr key={draft.id}>
+                <td><input type="checkbox" aria-label={`${draft.id}を選択`} checked={selectedIds.has(draft.id)} onChange={(event) => setSelectedIds((current) => {
+                  const next = new Set(current);
+                  if (event.target.checked) next.add(draft.id);
+                  else next.delete(draft.id);
+                  return next;
+                })} /></td>
+                <td><input aria-label={`${draft.id}の教材上の番号`} required value={draft.number} onChange={(event) => updateDraft(draft.id, "number", event.target.value)} /></td>
+                <td><input aria-label={`${draft.id}の内容ラベル`} value={draft.title} onChange={(event) => updateDraft(draft.id, "title", event.target.value)} /></td>
+                <td><select aria-label={`${draft.id}の問題形式`} value={draft.evaluationTypeOverride ?? ""} onChange={(event) => updateDraft(draft.id, "evaluationTypeOverride", (event.target.value || undefined) as ProblemEvaluationType | undefined)}><option value="">セクション設定（{evaluationLabels[section.evaluationType]}）</option><option value="binary">正誤</option><option value="partial_score">部分点</option></select></td>
+                <td><input aria-label={`${draft.id}の配点`} type="number" min="1" step="0.001" required value={draft.defaultMaxScore} onChange={(event) => updateDraft(draft.id, "defaultMaxScore", event.target.valueAsNumber)} /></td>
+                <td><input
+                  aria-label={`${draft.id}の正答`}
+                  data-correct-answer-index={index}
+                  value={draft.correctAnswer}
+                  onChange={(event) => updateDraft(draft.id, "correctAnswer", event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") return;
+                    event.preventDefault();
+                    const next = event.currentTarget.form?.querySelector<HTMLInputElement>(
+                      `[data-correct-answer-index="${index + 1}"]`,
+                    );
+                    next?.focus();
+                    next?.select();
+                  }}
+                /></td>
+                <td><button type="button" disabled={index === drafts.length - 1} onClick={() => setDrafts((current) => copyProblemLabelToFollowing(current, draft.id))}>以降へコピー</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {error && <p className="form-error" role="alert">{error}</p>}
+      <div className="modal-actions">
+        <button type="button" onClick={onCancel} disabled={saving}>キャンセル</button>
+        <button className="primary-button" disabled={saving}>{saving ? "保存中…" : `${drafts.length}問を一括保存`}</button>
+      </div>
+    </form>
   );
 }
 

@@ -414,6 +414,7 @@ fn to_question_bank(material: &ImportMaterial) -> QuestionBank {
                             default_max_score: 1.0,
                             evaluation_type_override: Some("binary".into()),
                             supplemental_info: None,
+                            correct_answer: None,
                             review_status: "active".into(),
                             attempts: vec![],
                         })
